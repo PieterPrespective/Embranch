@@ -1,0 +1,14 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<!-- DrawIO-Source-Size: 6058 -->
+<svg xmlns="http://www.w3.org/2000/svg" width="600" height="400" viewBox="0 0 600 400">
+  <rect width="600" height="400" fill="#f0f0f0" stroke="#cccccc" stroke-width="2"/>
+  <text x="300" y="180" font-family="Arial, sans-serif" font-size="16" text-anchor="middle" fill="#666666">
+    DrawIO Diagram: unity-game-flow
+  </text>
+  <text x="300" y="210" font-family="Arial, sans-serif" font-size="12" text-anchor="middle" fill="#999999">
+    Please export this diagram using DrawIO desktop or web app
+  </text>
+  <text x="300" y="240" font-family="Arial, sans-serif" font-size="10" text-anchor="middle" fill="#bbbbbb">
+    Source: unity-game-flow.drawio
+  </text>
+</svg>

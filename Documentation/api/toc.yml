@@ -1,0 +1,50 @@
+### YamlMime:TableOfContent
+items:
+- uid: DMMS.Logging
+  name: DMMS.Logging
+  type: Namespace
+  items:
+  - uid: DMMS.Logging.FileLogWriter
+    name: FileLogWriter
+    type: Class
+  - uid: DMMS.Logging.FileLogger
+    name: FileLogger
+    type: Class
+  - uid: DMMS.Logging.FileLoggerProvider
+    name: FileLoggerProvider
+    type: Class
+  - uid: DMMS.Logging.LoggingExtensions
+    name: LoggingExtensions
+    type: Class
+- uid: DMMS.Models
+  name: DMMS.Models
+  type: Namespace
+  items:
+  - uid: DMMS.Models.ServerConfiguration
+    name: ServerConfiguration
+    type: Class
+- uid: DMMS.Tools
+  name: DMMS.Tools
+  type: Namespace
+  items:
+  - uid: DMMS.Tools.GetServerVersionTool
+    name: GetServerVersionTool
+    type: Class
+- uid: DMMSTesting.IntegrationTests
+  name: DMMSTesting.IntegrationTests
+  type: Namespace
+  items:
+  - uid: DMMSTesting.IntegrationTests.FileLoggingIntegrationTests
+    name: FileLoggingIntegrationTests
+    type: Class
+  - uid: DMMSTesting.IntegrationTests.ServerIntegrationTests
+    name: ServerIntegrationTests
+    type: Class
+- uid: DMMSTesting.Tools
+  name: DMMSTesting.Tools
+  type: Namespace
+  items:
+  - uid: DMMSTesting.Tools.GetServerVersionToolTests
+    name: GetServerVersionToolTests
+    type: Class
+memberLayout: SamePage

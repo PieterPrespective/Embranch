@@ -8,6 +8,9 @@
     <Nullable>enable</Nullable>
     <AssemblyName>DMMSTesting</AssemblyName>
     <RootNamespace>DMMSTesting</RootNamespace>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <DocumentationFile>bin\$(Configuration)\$(TargetFramework)\DMMSTesting.xml</DocumentationFile>
+    <NoWarn>$(NoWarn);1591</NoWarn>
   </PropertyGroup>
 
   <ItemGroup>

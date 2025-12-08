@@ -7,6 +7,9 @@
     <Nullable>enable</Nullable>
     <AssemblyName>DMMS</AssemblyName>
     <RootNamespace>DMMS</RootNamespace>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <DocumentationFile>bin\$(Configuration)\$(TargetFramework)\DMMS.xml</DocumentationFile>
+    <NoWarn>$(NoWarn);1591</NoWarn>
   </PropertyGroup>
 
   <PropertyGroup>
