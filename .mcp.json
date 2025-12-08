@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "chroma-feat-design-planning-mcp": {
+      "command": "uvx",
+      "args": [
+        "chroma-mcp",
+        "--client-type",
+        "persistent",
+        "--data-dir",
+        "./ChromaMemStores/feat-design-planning"
+      ]
+    }
+  }
+}

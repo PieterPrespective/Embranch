@@ -1,0 +1,19 @@
+{
+  "mcpServers": {
+    "umcp": {
+      "command": "docker",
+      "args": ["run", "-i", "umcpserver"],
+      "env": {}
+    },
+    "umcp-local": {
+      "command": "dotnet",
+      "args": ["run", "--project", "C:\\Prespective\\250328_TestMLStuffUnity3d\\UnityDockerMCP\\UMCPServer\\UMCPServer.csproj"],
+      "env": {}
+    },
+    "umcp-exe": {
+      "command": "C:\\Prespective\\250328_TestMLStuffUnity3d\\UnityDockerMCP\\UMCPServer\\bin\\Release\\net9.0\\UMCPServer.exe",
+      "args": [],
+      "env": {}
+    }
+  }
+}

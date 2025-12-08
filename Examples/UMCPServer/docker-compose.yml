@@ -1,0 +1,52 @@
+version: '3.8'
+
+services:
+  umcpserver:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "6400:6401"
+    network_mode: host  # Simple for development
+    environment:
+      # Docker-specific settings
+      - DOTNET_RUNNING_IN_CONTAINER=true # Whether the MCP Server is running in a container
+      - UNITY_HOST=host.docker.internal  # Maps to the host machine from within Docker
+      - UNITY_PORT=6400                  # Unity TCP Command port
+      - UNITY_STATE_PORT=6401            # Unity TCP State port
+      - MCP_PORT=6500                    # MCP server port
+      - ENABLE_LOGGING=true              # Enable detailed logging for troubleshooting
+      # Connection settings
+      - CONNECTION_TIMEOUT=86400         # 24 hours
+      - BUFFER_SIZE=16777216             # 16MB
+      - MAX_RETRIES=5                    # Increased retries for Docker environments
+      - RETRY_DELAY=2.0                  # Longer retry delay for Docker environments
+    stdin_open: true   # Required for interactive mode
+    tty: true          # Required for interactive mode
+    
+    # Volume mounts for file access
+    volumes:
+      # Windows: Mount Unity project TestResults directory
+      - type: bind
+        source: ../TestResults
+        target: /app/TestResults
+        read_only: true
+      # Windows: Mount entire Unity project for broader access
+      - type: bind
+        source: ../
+        target: /app/UnityProject
+        read_only: true
+    
+    # Maps host.docker.internal to the host IP for all platforms
+    # This works on Linux, macOS and Windows
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    
+    # Uncomment the line below if you still have connection issues
+    # This provides direct access to the host network (Linux only)
+    # network_mode: "host"
+    
+    # Alternative approach: Publish Unity port to the host
+    # Only needed for specific network configurations
+    # ports:
+    #  - "6400:6400"
