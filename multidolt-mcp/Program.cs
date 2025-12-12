@@ -24,6 +24,7 @@ if (enableLogging)
 }
 
 builder.Services.Configure<ServerConfiguration>(options => ConfigurationUtility.GetServerConfiguration(options));
+builder.Services.Configure<DoltConfiguration>(options => ConfigurationUtility.GetDoltConfiguration(options));
 
 // Register both implementations
 builder.Services.AddSingleton<ChromaDbService>();
@@ -31,6 +32,9 @@ builder.Services.AddSingleton<ChromaDbService>();
 // Register the appropriate service based on configuration
 builder.Services.AddSingleton<IChromaDbService>(serviceProvider =>
     ChromaDbServiceFactory.CreateService(serviceProvider));
+
+// Register Dolt services
+builder.Services.AddSingleton<IDoltCli, DoltCli>();
 
 builder.Services
     .AddMcpServer()
@@ -116,6 +120,27 @@ public static class ConfigurationUtility
         options.ChromaPort = int.TryParse(Environment.GetEnvironmentVariable("CHROMA_PORT"), out var chromaPort) ? chromaPort : 8000;
         options.ChromaMode = Environment.GetEnvironmentVariable("CHROMA_MODE") ?? "persistent";
         options.ChromaDataPath = Environment.GetEnvironmentVariable("CHROMA_DATA_PATH") ?? "./chroma_data";
+        
+        return options;
+    }
+
+    /// <summary>
+    /// Populates the Dolt configuration from environment variables
+    /// </summary>
+    /// <param name="options">The Dolt configuration to populate</param>
+    /// <returns>The populated Dolt configuration</returns>
+    public static DoltConfiguration GetDoltConfiguration(DoltConfiguration options)
+    {
+        // Check for Dolt executable path, defaulting to "C:\Program Files\Dolt\bin\dolt.exe" on Windows
+        var defaultPath = Environment.OSVersion.Platform == PlatformID.Win32NT 
+            ? @"C:\Program Files\Dolt\bin\dolt.exe" 
+            : "dolt";
+        options.DoltExecutablePath = Environment.GetEnvironmentVariable("DOLT_EXECUTABLE_PATH") ?? defaultPath;
+        options.RepositoryPath = Environment.GetEnvironmentVariable("DOLT_REPOSITORY_PATH") ?? "./data/dolt-repo";
+        options.RemoteName = Environment.GetEnvironmentVariable("DOLT_REMOTE_NAME") ?? "origin";
+        options.RemoteUrl = Environment.GetEnvironmentVariable("DOLT_REMOTE_URL");
+        options.CommandTimeoutMs = int.TryParse(Environment.GetEnvironmentVariable("DOLT_COMMAND_TIMEOUT"), out var timeout) ? timeout : 30000;
+        options.EnableDebugLogging = bool.TryParse(Environment.GetEnvironmentVariable("DOLT_DEBUG_LOGGING"), out var debug) && debug;
         
         return options;
     }
