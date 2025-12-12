@@ -1,0 +1,8 @@
+{
+  "profiles": {
+    "DMMSManualTesting": {
+      "commandName": "Project",
+      "hotReloadEnabled": false
+    }
+  }
+}
