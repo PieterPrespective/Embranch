@@ -92,10 +92,26 @@ public class ChromaQueryDocumentsTool
 
             var result = await _chromaService.QueryDocumentsAsync(collectionName, queryTexts, nResults, where, whereDocument);
 
+            // Cast to dictionary and extract values for proper JSON structure
+            if (result is Dictionary<string, object> resultDict)
+            {
+                return new
+                {
+                    ids = resultDict.TryGetValue("ids", out var ids) ? ids : null,
+                    embeddings = resultDict.TryGetValue("embeddings", out var embeddings) ? embeddings : null,
+                    documents = resultDict.TryGetValue("documents", out var documents) ? documents : null,
+                    uris = resultDict.TryGetValue("uris", out var uris) ? uris : null,
+                    data = resultDict.TryGetValue("data", out var data) ? data : null,
+                    metadatas = resultDict.TryGetValue("metadatas", out var metadatas) ? metadatas : null,
+                    distances = resultDict.TryGetValue("distances", out var distances) ? distances : null,
+                    included = new[] { "documents", "metadatas", "distances", "ids" }
+                };
+            }
+
             return new
             {
-                success = true,
-                result = JsonSerializer.Serialize(result, new JsonSerializerOptions { WriteIndented = true })
+                success = false,
+                error = "Unexpected result format from query operation"
             };
         }
         catch (Exception ex)

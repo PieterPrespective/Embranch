@@ -39,15 +39,13 @@ public class ChromaListCollectionsTool
             _logger.LogInformation($"[ChromaListCollectionsTool.ListCollections] gotten output: { ((collections == null) ? "Null" : string.Join(',', collections.ToArray())) }");
 
 
-            if (collections.Count == 0)
-            {
-                collections.Add("__NO_COLLECTIONS_FOUND__");
-            }
-
+            // Note: Keep empty list instead of adding placeholder for proper JSON format
+            var totalCount = collections?.Count ?? 0;
+            
             return new
             {
-                success = true,
-                collections = string.Join("\n", collections)
+                collections = collections?.ToArray() ?? Array.Empty<string>(),
+                total_count = totalCount
             };
         }
         catch (Exception ex)

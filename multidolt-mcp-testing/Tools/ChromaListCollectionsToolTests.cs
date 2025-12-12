@@ -43,8 +43,10 @@ public class ChromaListCollectionsToolTests
         // Assert
         Assert.That(result, Is.Not.Null);
         var resultObj = result as dynamic;
-        Assert.That(resultObj?.success, Is.True);
-        Assert.That(resultObj?.collections, Is.EqualTo("collection1\ncollection2\ncollection3"));
+        Assert.That(resultObj?.collections, Is.Not.Null);
+        Assert.That(resultObj?.total_count, Is.EqualTo(3));
+        var resultCollections = resultObj?.collections as string[];
+        Assert.That(resultCollections, Is.EqualTo(new[] { "collection1", "collection2", "collection3" }));
     }
 
     /// <summary>
@@ -64,8 +66,10 @@ public class ChromaListCollectionsToolTests
         // Assert
         Assert.That(result, Is.Not.Null);
         var resultObj = result as dynamic;
-        Assert.That(resultObj?.success, Is.True);
-        Assert.That(resultObj?.collections, Is.EqualTo("__NO_COLLECTIONS_FOUND__"));
+        Assert.That(resultObj?.collections, Is.Not.Null);
+        Assert.That(resultObj?.total_count, Is.EqualTo(0));
+        var resultCollections = resultObj?.collections as string[];
+        Assert.That(resultCollections, Is.Empty);
     }
 
     /// <summary>
@@ -85,8 +89,10 @@ public class ChromaListCollectionsToolTests
         // Assert
         Assert.That(result, Is.Not.Null);
         var resultObj = result as dynamic;
-        Assert.That(resultObj?.success, Is.True);
-        Assert.That(resultObj?.collections, Is.EqualTo("collection2"));
+        Assert.That(resultObj?.collections, Is.Not.Null);
+        Assert.That(resultObj?.total_count, Is.EqualTo(1));
+        var returnedCollections = resultObj?.collections as string[];
+        Assert.That(returnedCollections, Is.EqualTo(new[] { "collection2" }));
         _mockChromaService.Verify(s => s.ListCollectionsAsync(1, 1), Times.Once);
     }
 
