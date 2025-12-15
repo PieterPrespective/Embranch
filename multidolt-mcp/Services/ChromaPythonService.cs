@@ -17,6 +17,8 @@ public class ChromaPythonService : IChromaDbService, IDisposable
     private readonly ILogger<ChromaPythonService> _logger;
     private readonly ServerConfiguration _configuration;
     private readonly JsonSerializerOptions _jsonOptions;
+    private readonly string _clientId;
+    private readonly string _configurationString;
     private bool _disposed = false;
     private bool _clientInitialized = false;
     private readonly object _initLock = new object();
@@ -34,7 +36,15 @@ public class ChromaPythonService : IChromaDbService, IDisposable
             WriteIndented = true
         };
 
+        // Generate unique client ID and configuration string
+        _clientId = GenerateClientId();
+        _configurationString = GenerateConfigurationString();
+        
+        // Set up the client pool logger
+        ChromaClientPool.SetLogger(_logger);
+
         // Client initialization is deferred until first use
+        _logger.LogInformation("Created ChromaPythonService with client ID: {ClientId}", _clientId);
     }
 
     /// <summary>
@@ -84,29 +94,14 @@ public class ChromaPythonService : IChromaDbService, IDisposable
         {
             try
             {
-                dynamic chromadb = Py.Import("chromadb");
-                dynamic client;
+                // Create client using the new client pool
+                dynamic client = ChromaClientPool.GetOrCreateClient(_clientId, _configurationString);
                 
-                // Create appropriate client based on configuration
-                if (!string.IsNullOrEmpty(_configuration.ChromaDataPath))
-                {
-                    // Use PersistentClient for file-based storage
-                    string dataPath = Path.GetFullPath(_configuration.ChromaDataPath);
-                    client = chromadb.PersistentClient(path: dataPath);
-                    _logger.LogInformation($"Initialized ChromaDB PersistentClient at: {dataPath}");
-                }
-                else
-                {
-                    // Use HttpClient for remote ChromaDB server
-                    client = chromadb.HttpClient(
-                        host: _configuration.ChromaHost,
-                        port: _configuration.ChromaPort
-                    );
-                    _logger.LogInformation($"Initialized ChromaDB HttpClient at {_configuration.ChromaHost}:{_configuration.ChromaPort}");
-                }
+                _logger.LogInformation("Initialized ChromaDB client {ClientId} with config: {Config}", _clientId, _configurationString);
 
-                // Store references in a thread-safe way
-                ChromaDbReferences.SetReferences(chromadb, client);
+                // For backward compatibility, set this as the default client
+                ChromaDbReferences.SetDefaultClientId(_clientId);
+                
                 return true;
             }
             catch (Exception ex)
@@ -130,7 +125,7 @@ public class ChromaPythonService : IChromaDbService, IDisposable
         {
             _logger.LogInformation($"[ChromaPythonService.ListCollectionsAsync] executing on Python thread");
             
-            dynamic client = ChromaDbReferences.GetClient();
+            dynamic client = ChromaClientPool.GetClient(_clientId);
             dynamic collections = client.list_collections();
             var result = new List<string>();
             
@@ -161,7 +156,7 @@ public class ChromaPythonService : IChromaDbService, IDisposable
         return await PythonContext.ExecuteAsync(() =>
         {
             _logger.LogInformation($"Before PyObject");
-            dynamic client = ChromaDbReferences.GetClient();
+            dynamic client = ChromaClientPool.GetClient(_clientId);
             PyObject? metadataObj = null;
             
             if (metadata != null && metadata.Count > 0)
@@ -193,7 +188,7 @@ public class ChromaPythonService : IChromaDbService, IDisposable
         
         return await PythonContext.ExecuteAsync(() =>
         {
-            dynamic client = ChromaDbReferences.GetClient();
+            dynamic client = ChromaClientPool.GetClient(_clientId);
             dynamic collection = client.get_collection(name: name);
             
             var result = new Dictionary<string, object>
@@ -216,7 +211,7 @@ public class ChromaPythonService : IChromaDbService, IDisposable
         
         return await PythonContext.ExecuteAsync(() =>
         {
-            dynamic client = ChromaDbReferences.GetClient();
+            dynamic client = ChromaClientPool.GetClient(_clientId);
             client.delete_collection(name: name);
             _logger.LogInformation($"Deleted collection '{name}'");
             return true;
@@ -251,7 +246,7 @@ public class ChromaPythonService : IChromaDbService, IDisposable
         
         return await PythonContext.ExecuteAsync(() =>
         {
-            dynamic client = ChromaDbReferences.GetClient();
+            dynamic client = ChromaClientPool.GetClient(_clientId);
             dynamic collection = client.get_or_create_collection(name: collectionName);
             
             // Convert C# lists to Python lists
@@ -296,7 +291,7 @@ public class ChromaPythonService : IChromaDbService, IDisposable
         
         return await PythonContext.ExecuteAsync(() =>
         {
-            dynamic client = ChromaDbReferences.GetClient();
+            dynamic client = ChromaClientPool.GetClient(_clientId);
             dynamic collection = client.get_collection(name: collectionName);
             
             PyObject pyQueryTexts = ConvertListToPyList(queryTexts);
@@ -360,7 +355,7 @@ public class ChromaPythonService : IChromaDbService, IDisposable
         
         return await PythonContext.ExecuteAsync(() =>
         {
-            dynamic client = ChromaDbReferences.GetClient();
+            dynamic client = ChromaClientPool.GetClient(_clientId);
             dynamic collection = client.get_collection(name: collectionName);
             
             PyObject? pyIds = ids != null && ids.Count > 0 ? ConvertListToPyList(ids) : null;
@@ -427,7 +422,7 @@ public class ChromaPythonService : IChromaDbService, IDisposable
         
         return await PythonContext.ExecuteAsync(() =>
         {
-            dynamic client = ChromaDbReferences.GetClient();
+            dynamic client = ChromaClientPool.GetClient(_clientId);
             dynamic collection = client.get_collection(name: collectionName);
             
             PyObject pyIds = ConvertListToPyList(ids);
@@ -461,7 +456,7 @@ public class ChromaPythonService : IChromaDbService, IDisposable
         
         return await PythonContext.ExecuteAsync(() =>
         {
-            dynamic client = ChromaDbReferences.GetClient();
+            dynamic client = ChromaClientPool.GetClient(_clientId);
             dynamic collection = client.get_collection(name: collectionName);
             PyObject pyIds = ConvertListToPyList(ids);
             collection.delete(ids: pyIds);
@@ -480,7 +475,7 @@ public class ChromaPythonService : IChromaDbService, IDisposable
         
         return await PythonContext.ExecuteAsync(() =>
         {
-            dynamic client = ChromaDbReferences.GetClient();
+            dynamic client = ChromaClientPool.GetClient(_clientId);
             dynamic collection = client.get_collection(name: collectionName);
             int count = collection.count();
             return count;
@@ -536,7 +531,7 @@ public class ChromaPythonService : IChromaDbService, IDisposable
                 }
                 else if (kvp.Value is bool boolValue)
                 {
-                    pyDict[kvp.Key] = boolValue;
+                    pyDict[kvp.Key] = boolValue.ToPython();
                 }
                 else if (kvp.Value is float floatValue)
                 {
@@ -688,6 +683,40 @@ public class ChromaPythonService : IChromaDbService, IDisposable
     #endregion
 
     /// <summary>
+    /// Generates a unique client ID for this service instance
+    /// </summary>
+    private string GenerateClientId()
+    {
+        var timestamp = DateTime.UtcNow.ToString("yyyyMMdd_HHmmss_fff");
+        var guid = Guid.NewGuid().ToString("N")[..8]; // First 8 characters of GUID
+        return $"ChromaPythonService_{timestamp}_{guid}";
+    }
+
+    /// <summary>
+    /// Generates a configuration string for the client pool
+    /// </summary>
+    private string GenerateConfigurationString()
+    {
+        if (!string.IsNullOrEmpty(_configuration.ChromaDataPath))
+        {
+            return $"persistent:{_configuration.ChromaDataPath}";
+        }
+        else if (!string.IsNullOrEmpty(_configuration.ChromaHost))
+        {
+            return $"http:{_configuration.ChromaHost}:{_configuration.ChromaPort}";
+        }
+        else
+        {
+            throw new InvalidOperationException("ChromaDB configuration must specify either ChromaDataPath (persistent) or ChromaHost (http)");
+        }
+    }
+
+    /// <summary>
+    /// Gets the client ID for this service instance
+    /// </summary>
+    public string GetClientId() => _clientId;
+
+    /// <summary>
     /// Disposes of the Python resources
     /// </summary>
     public void Dispose()
@@ -705,11 +734,10 @@ public class ChromaPythonService : IChromaDbService, IDisposable
         {
             if (disposing)
             {
-                _logger?.LogInformation("Disposing ChromaPythonService");
+                _logger?.LogInformation("Disposing ChromaPythonService with client ID: {ClientId}", _clientId);
                 
-                // Clear client references - the actual cleanup is handled by PythonContext
-                // which manages the Python runtime lifecycle
-                ChromaDbReferences.Clear();
+                // Dispose this specific client from the pool
+                ChromaClientPool.DisposeClient(_clientId);
                 _clientInitialized = false;
                 
                 _logger?.LogInformation("ChromaPythonService disposed successfully");

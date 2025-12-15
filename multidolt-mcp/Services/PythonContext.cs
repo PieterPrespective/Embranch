@@ -148,7 +148,7 @@ public static class PythonContext
         }
     }
 
-    public static volatile bool IgnoreFutureOperations = false; 
+    //public static volatile bool IgnoreFutureOperations = false; 
 
     /// <summary>
     /// Executes a Python operation asynchronously on the dedicated Python thread
@@ -175,10 +175,10 @@ public static class PythonContext
             return Task.FromResult(result);
         }
 
-        if(IgnoreFutureOperations)
-            {
-            throw new InvalidOperationException($"PythonContext is ignoring future operations, including {((operationName != null) ? operationName : "null")}");
-            }
+        //if(IgnoreFutureOperations)
+        //    {
+        //    throw new InvalidOperationException($"PythonContext is ignoring future operations, including {((operationName != null) ? operationName : "null")}");
+        //    }
 
 
         Console.WriteLine("Executing Python operation asynchronously: " + (operationName ?? operation.Method?.Name ?? "UnnamedOperation"));

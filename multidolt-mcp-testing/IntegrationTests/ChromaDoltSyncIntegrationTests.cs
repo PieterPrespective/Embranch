@@ -340,13 +340,13 @@ public class ChromaDoltSyncIntegrationTests
         var doltCli = new DoltCli(Options.Create(doltConfig), doltLogger);
         var syncManager = new SyncManager(doltCli, _outputChromaService, syncLogger);
 
-        System.Timers.Timer timer = new System.Timers.Timer(10000d);
-        timer.Elapsed += (Object source, ElapsedEventArgs e) => {
-            Console.WriteLine("10 seconds have passed - ignoring future Python operations to prevent hangs.");
-            PythonContext.IgnoreFutureOperations = true;
-            };
-        timer.AutoReset = false; // Ensures it only runs once
-        timer.Start(); // Start the timer (same as .Start())
+        //System.Timers.Timer timer = new System.Timers.Timer(10000d);
+        //timer.Elapsed += (Object source, ElapsedEventArgs e) => {
+        //    Console.WriteLine("10 seconds have passed - ignoring future Python operations to prevent hangs.");
+        //    PythonContext.IgnoreFutureOperations = true;
+        //    };
+        //timer.AutoReset = false; // Ensures it only runs once
+        //timer.Start(); // Start the timer (same as .Start())
 
         List<string> outputCollections = await _outputChromaService.ListCollectionsAsync();
 
