@@ -36,6 +36,18 @@ public class DoltResetTool
         {
             _logger.LogInformation($"[DoltResetTool.DoltReset] Resetting to: {target}, confirm={confirm_discard}");
 
+            // First check if Dolt is available
+            var doltCheck = await _doltCli.CheckDoltAvailableAsync();
+            if (!doltCheck.Success)
+            {
+                return new
+                {
+                    success = false,
+                    error = "DOLT_EXECUTABLE_NOT_FOUND",
+                    message = doltCheck.Error
+                };
+            }
+
             // Check if repository is initialized
             var isInitialized = await _doltCli.IsInitializedAsync();
             if (!isInitialized)

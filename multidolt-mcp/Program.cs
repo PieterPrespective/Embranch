@@ -9,6 +9,21 @@ using DMMS.Tools;
 
 var builder = Host.CreateApplicationBuilder(args);
 
+// Add global exception handling
+AppDomain.CurrentDomain.UnhandledException += (sender, e) =>
+{
+    try
+    {
+        var logFileName = Environment.GetEnvironmentVariable("LOG_FILE_NAME") ?? "DMMS_crash.log";
+        var crashLog = $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] UNHANDLED EXCEPTION: {e.ExceptionObject}\n";
+        File.AppendAllText(logFileName, crashLog);
+    }
+    catch
+    {
+        // Ignore logging errors during crash
+    }
+};
+
 builder.Logging.ClearProviders();
 bool enableLogging = LoggingUtility.IsLoggingEnabled;
 
@@ -17,7 +32,7 @@ if (enableLogging)
     var logFileName = Environment.GetEnvironmentVariable("LOG_FILE_NAME");
     var logLevel = Enum.TryParse<LogLevel>(Environment.GetEnvironmentVariable("LOG_LEVEL"), out var level) 
         ? level 
-        : LogLevel.Information;
+        : LogLevel.Debug; // Default to Debug level for better troubleshooting
     
     builder.Logging.AddFileLogging(logFileName, logLevel);
     builder.Logging.SetMinimumLevel(logLevel);
@@ -35,6 +50,7 @@ builder.Services.AddSingleton<IChromaDbService>(serviceProvider =>
 
 // Register Dolt services
 builder.Services.AddSingleton<IDoltCli, DoltCli>();
+builder.Services.AddSingleton<ISyncManagerV2, SyncManagerV2>();
 
 builder.Services
     .AddMcpServer()

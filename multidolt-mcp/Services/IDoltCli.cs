@@ -10,6 +10,12 @@ namespace DMMS.Services
         // ==================== Repository Management ====================
         
         /// <summary>
+        /// Check if the Dolt executable is available and accessible
+        /// </summary>
+        /// <returns>Result indicating if Dolt is available with version info or error message</returns>
+        Task<DoltCommandResult> CheckDoltAvailableAsync();
+        
+        /// <summary>
         /// Check if a Dolt repository is initialized in the configured repository path
         /// </summary>
         /// <returns>True if repository exists and is initialized, false otherwise</returns>
@@ -63,6 +69,15 @@ namespace DMMS.Services
         /// <param name="force">If true, force delete even if branch has unmerged changes</param>
         /// <returns>Command result indicating success/failure of branch deletion</returns>
         Task<DoltCommandResult> DeleteBranchAsync(string branchName, bool force = false);
+        
+        /// <summary>
+        /// Rename an existing branch to a new name
+        /// </summary>
+        /// <param name="oldBranchName">Current name of the branch to rename</param>
+        /// <param name="newBranchName">New name for the branch</param>
+        /// <param name="force">If true, force rename even if new branch name already exists</param>
+        /// <returns>Command result indicating success/failure of branch rename</returns>
+        Task<DoltCommandResult> RenameBranchAsync(string oldBranchName, string newBranchName, bool force = false);
         
         /// <summary>
         /// Switch to an existing branch or create and switch to a new branch

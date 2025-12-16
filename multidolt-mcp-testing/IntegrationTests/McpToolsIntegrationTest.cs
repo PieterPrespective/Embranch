@@ -150,6 +150,30 @@ namespace DMMSTesting.IntegrationTests
                 throw;
             }
         }
+
+        [Test]
+        [CancelAfter(120000)] // 2 minutes timeout
+        public async Task DoltBranchesTool_BranchOperations_ShouldWork()
+        {
+            // Initialize PythonContext for ChromaDB operations
+            if (!PythonContext.IsInitialized)
+            {
+                _logger!.LogInformation("Initializing PythonContext for branch operations test...");
+                PythonContext.Initialize();
+                _logger.LogInformation("✅ PythonContext initialized successfully");
+            }
+            
+            try
+            {
+                await TestBranchOperationsAsync();
+                _logger!.LogInformation("✅ DoltBranchesTool branch operations test completed successfully");
+            }
+            catch (Exception ex)
+            {
+                _logger!.LogError(ex, "❌ Branch operations test failed");
+                throw;
+            }
+        }
         
         private async Task RunMcpToolsWorkflowAsync()
         {
@@ -467,6 +491,126 @@ namespace DMMSTesting.IntegrationTests
         }
         
         #endregion
+        
+        private async Task TestBranchOperationsAsync()
+        {
+            const string TEST_COLLECTION = "BranchTestCollection";
+            const string TEST_BRANCH_NAME = "test-feature-branch";
+            const string RENAMED_BRANCH_NAME = "feature-branch-renamed";
+            
+            _logger!.LogInformation("🌿 === DOLT BRANCHES TOOL OPERATIONS TEST STARTING ===");
+            _logger.LogInformation("🎯 Test Objective: Validate DoltBranchesTool create, rename, and delete operations");
+            
+            // Setup test environment
+            await SetupUserEnvironment(_userA!);
+            
+            // Step 1: Initialize repository first
+            _logger.LogInformation("⚙️ Step 1: Initializing Dolt repository");
+            var initResult = await _userA.DoltInitTool!.DoltInit();
+            ValidateSuccessfulResult(initResult, "DoltInit");
+            _logger.LogInformation("✅ Repository initialized successfully");
+            
+            // Step 2: List initial branches (should just be main)
+            _logger.LogInformation("📋 Step 2: Listing initial branches");
+            var listResult = await _userA.DoltBranchesTool!.DoltBranches("list");
+            ValidateSuccessfulResult(listResult, "DoltBranches-List");
+            _logger.LogInformation("✅ Initial branches listed successfully");
+            
+            // Step 3: Create a new branch
+            _logger.LogInformation("➕ Step 3: Creating new branch '{Branch}'", TEST_BRANCH_NAME);
+            var createResult = await _userA.DoltBranchesTool!.DoltBranches("create", true, TEST_BRANCH_NAME);
+            ValidateSuccessfulResult(createResult, "DoltBranches-Create");
+            _logger.LogInformation("✅ Branch '{Branch}' created successfully", TEST_BRANCH_NAME);
+            
+            // Step 4: List branches again to verify creation
+            _logger.LogInformation("📋 Step 4: Listing branches to verify creation");
+            var listAfterCreateResult = await _userA.DoltBranchesTool!.DoltBranches("list");
+            ValidateSuccessfulResult(listAfterCreateResult, "DoltBranches-ListAfterCreate");
+            
+            // Parse the result to check if our branch exists
+            var listJson = JsonSerializer.Serialize(listAfterCreateResult);
+            var listDoc = JsonDocument.Parse(listJson);
+            var branchFound = false;
+            if (listDoc.RootElement.TryGetProperty("branches", out var branchesElement))
+            {
+                foreach (var branch in branchesElement.EnumerateArray())
+                {
+                    if (branch.TryGetProperty("name", out var nameElement) && 
+                        nameElement.GetString() == TEST_BRANCH_NAME)
+                    {
+                        branchFound = true;
+                        break;
+                    }
+                }
+            }
+            Assert.That(branchFound, Is.True, $"Branch '{TEST_BRANCH_NAME}' should be found in the branches list");
+            _logger.LogInformation("✅ Branch '{Branch}' verified in branches list", TEST_BRANCH_NAME);
+            
+            // Step 5: Rename the branch
+            _logger.LogInformation("🔄 Step 5: Renaming branch '{OldName}' to '{NewName}'", TEST_BRANCH_NAME, RENAMED_BRANCH_NAME);
+            var renameParams = JsonSerializer.Serialize(new { old = TEST_BRANCH_NAME, @new = RENAMED_BRANCH_NAME, force = false });
+            var renameResult = await _userA.DoltBranchesTool!.DoltBranches("rename", true, renameParams);
+            ValidateSuccessfulResult(renameResult, "DoltBranches-Rename");
+            _logger.LogInformation("✅ Branch renamed successfully from '{OldName}' to '{NewName}'", TEST_BRANCH_NAME, RENAMED_BRANCH_NAME);
+            
+            // Step 6: List branches to verify rename
+            _logger.LogInformation("📋 Step 6: Listing branches to verify rename");
+            var listAfterRenameResult = await _userA.DoltBranchesTool!.DoltBranches("list");
+            ValidateSuccessfulResult(listAfterRenameResult, "DoltBranches-ListAfterRename");
+            
+            // Verify old name is gone and new name exists
+            var renameListJson = JsonSerializer.Serialize(listAfterRenameResult);
+            var renameListDoc = JsonDocument.Parse(renameListJson);
+            var oldBranchFound = false;
+            var newBranchFound = false;
+            if (renameListDoc.RootElement.TryGetProperty("branches", out var renameBranchesElement))
+            {
+                foreach (var branch in renameBranchesElement.EnumerateArray())
+                {
+                    if (branch.TryGetProperty("name", out var nameElement))
+                    {
+                        var name = nameElement.GetString();
+                        if (name == TEST_BRANCH_NAME) oldBranchFound = true;
+                        if (name == RENAMED_BRANCH_NAME) newBranchFound = true;
+                    }
+                }
+            }
+            Assert.That(oldBranchFound, Is.False, $"Old branch '{TEST_BRANCH_NAME}' should not exist after rename");
+            Assert.That(newBranchFound, Is.True, $"New branch '{RENAMED_BRANCH_NAME}' should exist after rename");
+            _logger.LogInformation("✅ Rename operation verified - old branch gone, new branch exists");
+            
+            // Step 7: Delete the renamed branch
+            _logger.LogInformation("🗑️ Step 7: Deleting branch '{Branch}'", RENAMED_BRANCH_NAME);
+            var deleteResult = await _userA.DoltBranchesTool!.DoltBranches("delete", true, RENAMED_BRANCH_NAME);
+            ValidateSuccessfulResult(deleteResult, "DoltBranches-Delete");
+            _logger.LogInformation("✅ Branch '{Branch}' deleted successfully", RENAMED_BRANCH_NAME);
+            
+            // Step 8: Final list to verify deletion
+            _logger.LogInformation("📋 Step 8: Final branch list to verify deletion");
+            var finalListResult = await _userA.DoltBranchesTool!.DoltBranches("list");
+            ValidateSuccessfulResult(finalListResult, "DoltBranches-FinalList");
+            
+            // Verify deleted branch is gone
+            var finalListJson = JsonSerializer.Serialize(finalListResult);
+            var finalListDoc = JsonDocument.Parse(finalListJson);
+            var deletedBranchFound = false;
+            if (finalListDoc.RootElement.TryGetProperty("branches", out var finalBranchesElement))
+            {
+                foreach (var branch in finalBranchesElement.EnumerateArray())
+                {
+                    if (branch.TryGetProperty("name", out var nameElement) && 
+                        nameElement.GetString() == RENAMED_BRANCH_NAME)
+                    {
+                        deletedBranchFound = true;
+                        break;
+                    }
+                }
+            }
+            Assert.That(deletedBranchFound, Is.False, $"Deleted branch '{RENAMED_BRANCH_NAME}' should not exist in final list");
+            _logger.LogInformation("✅ Deletion verified - branch '{Branch}' no longer exists", RENAMED_BRANCH_NAME);
+            
+            _logger.LogInformation("🎉 === DOLT BRANCHES TOOL OPERATIONS TEST COMPLETED SUCCESSFULLY ===");
+        }
         
         #region Helper Methods
         

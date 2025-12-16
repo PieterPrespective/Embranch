@@ -39,6 +39,18 @@ public class DoltCommitsTool
         {
             _logger.LogInformation($"[DoltCommitsTool.DoltCommits] Listing commits on branch={branch}, limit={limit}, offset={offset}");
 
+            // First check if Dolt is available
+            var doltCheck = await _doltCli.CheckDoltAvailableAsync();
+            if (!doltCheck.Success)
+            {
+                return new
+                {
+                    success = false,
+                    error = "DOLT_EXECUTABLE_NOT_FOUND",
+                    message = doltCheck.Error
+                };
+            }
+
             // Check if repository is initialized
             var isInitialized = await _doltCli.IsInitializedAsync();
             if (!isInitialized)

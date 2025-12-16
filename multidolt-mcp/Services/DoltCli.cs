@@ -27,6 +27,7 @@ namespace DMMS.Services
         /// <param name="logger">Logger for debugging command execution and error reporting</param>
         public DoltCli(IOptions<DoltConfiguration> config, ILogger<DoltCli> logger)
         {
+            
             var configuration = config.Value;
             _doltPath = configuration.DoltExecutablePath ?? "dolt";
             _repositoryPath = configuration.RepositoryPath;
@@ -38,6 +39,45 @@ namespace DMMS.Services
                 PropertyNameCaseInsensitive = true,
                 PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower
             };
+
+            logger.LogDebug("[DoltCli] DoltCLI Initialized, setting up repository directory..");
+            // Ensure repository directory exists
+            EnsureRepositoryDirectoryExists();
+        }
+
+        /// <summary>
+        /// Ensures the repository directory exists, creating it and any parent directories if necessary
+        /// </summary>
+        private void EnsureRepositoryDirectoryExists()
+        {
+            try
+            {
+                if (string.IsNullOrEmpty(_repositoryPath))
+                {
+                    _logger.LogWarning("[DoltCli.EnsureRepositoryDirectoryExists] Repository path is null or empty, skipping directory creation");
+                    return;
+                }
+
+                // Convert relative path to absolute path for better handling
+                var absolutePath = Path.GetFullPath(_repositoryPath);
+                
+                if (!Directory.Exists(absolutePath))
+                {
+                    _logger.LogInformation("[DoltCli.EnsureRepositoryDirectoryExists] Creating repository directory: {RepositoryPath}", absolutePath);
+                    Directory.CreateDirectory(absolutePath);
+                    _logger.LogInformation("[DoltCli.EnsureRepositoryDirectoryExists] Successfully created repository directory: {RepositoryPath}", absolutePath);
+                }
+                else
+                {
+                    _logger.LogDebug("[DoltCli.EnsureRepositoryDirectoryExists] Repository directory already exists: {RepositoryPath}", absolutePath);
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "[DoltCli.EnsureRepositoryDirectoryExists] Failed to create repository directory: {RepositoryPath}. Error: {ErrorMessage}", 
+                    _repositoryPath, ex.Message);
+                throw new InvalidOperationException($"Failed to create Dolt repository directory '{_repositoryPath}': {ex.Message}", ex);
+            }
         }
 
         // ==================== Core Execution Methods ====================
@@ -84,6 +124,17 @@ namespace DMMS.Services
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Failed to execute dolt command");
+                
+                // Check if this is due to missing dolt executable
+                if (ex is System.ComponentModel.Win32Exception || 
+                    ex.Message.Contains("No such file or directory") ||
+                    ex.Message.Contains("cannot find") ||
+                    ex.Message.Contains("not found"))
+                {
+                    return new DoltCommandResult(false, "", 
+                        "Dolt executable not found. Please ensure Dolt is installed and added to PATH environment variable.", -2);
+                }
+                
                 return new DoltCommandResult(false, "", ex.Message, -1);
             }
         }
@@ -104,6 +155,42 @@ namespace DMMS.Services
         }
 
         // ==================== Repository Management ====================
+
+        public async Task<DoltCommandResult> CheckDoltAvailableAsync()
+        {
+            // Try to run 'dolt version' command to check if Dolt is available
+            // This doesn't require a repository to exist
+            try
+            {
+                var result = await Cli.Wrap(_doltPath)
+                    .WithArguments("version")
+                    .WithValidation(CommandResultValidation.None)
+                    .ExecuteBufferedAsync(new CancellationTokenSource(5000).Token);
+                    
+                if (result.ExitCode == 0)
+                {
+                    return new DoltCommandResult(true, result.StandardOutput, "", 0);
+                }
+                else
+                {
+                    return new DoltCommandResult(false, "", result.StandardError, result.ExitCode);
+                }
+            }
+            catch (Exception ex)
+            {
+                // Check if this is due to missing dolt executable
+                if (ex is System.ComponentModel.Win32Exception || 
+                    ex.Message.Contains("No such file or directory") ||
+                    ex.Message.Contains("cannot find") ||
+                    ex.Message.Contains("not found"))
+                {
+                    return new DoltCommandResult(false, "", 
+                        "Dolt executable not found. Please ensure Dolt is installed and added to PATH environment variable.", -2);
+                }
+                
+                return new DoltCommandResult(false, "", $"Failed to check Dolt availability: {ex.Message}", -1);
+            }
+        }
 
         public async Task<bool> IsInitializedAsync()
         {
@@ -249,6 +336,13 @@ namespace DMMS.Services
             return force
                 ? await ExecuteDoltCommandAsync("branch", "-D", branchName)
                 : await ExecuteDoltCommandAsync("branch", "-d", branchName);
+        }
+
+        public async Task<DoltCommandResult> RenameBranchAsync(string oldBranchName, string newBranchName, bool force = false)
+        {
+            return force
+                ? await ExecuteDoltCommandAsync("branch", "-m", "-f", oldBranchName, newBranchName)
+                : await ExecuteDoltCommandAsync("branch", "-m", oldBranchName, newBranchName);
         }
 
         // ==================== Commit Operations ====================

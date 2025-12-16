@@ -41,6 +41,18 @@ public class DoltCheckoutTool
         {
             _logger.LogInformation($"[DoltCheckoutTool.DoltCheckout] Checking out: {target}, create={create_branch}, if_uncommitted={if_uncommitted}");
 
+            // First check if Dolt is available
+            var doltCheck = await _doltCli.CheckDoltAvailableAsync();
+            if (!doltCheck.Success)
+            {
+                return new
+                {
+                    success = false,
+                    error = "DOLT_EXECUTABLE_NOT_FOUND",
+                    message = doltCheck.Error
+                };
+            }
+
             // Check if repository is initialized
             var isInitialized = await _doltCli.IsInitializedAsync();
             if (!isInitialized)

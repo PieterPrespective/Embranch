@@ -32,9 +32,22 @@ public class DoltStatusTool
     [Description("Get the current version control status including active branch, current commit, and any uncommitted local changes in the ChromaDB working copy.")]
     public virtual async Task<object> DoltStatus(bool verbose = false)
     {
+
         try
         {
             _logger.LogInformation($"[DoltStatusTool.DoltStatus] Getting status with verbose={verbose}");
+
+            // First check if Dolt is available
+            var doltCheck = await _doltCli.CheckDoltAvailableAsync();
+            if (!doltCheck.Success)
+            {
+                return new
+                {
+                    success = false,
+                    error = "DOLT_EXECUTABLE_NOT_FOUND",
+                    message = doltCheck.Error
+                };
+            }
 
             // Check if repository is initialized
             var isInitialized = await _doltCli.IsInitializedAsync();

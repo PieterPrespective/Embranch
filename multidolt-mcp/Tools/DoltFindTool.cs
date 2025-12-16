@@ -38,6 +38,18 @@ public class DoltFindTool
         {
             _logger.LogInformation($"[DoltFindTool.DoltFind] Searching for: {query}, type={search_type}, branch={branch}");
 
+            // First check if Dolt is available
+            var doltCheck = await _doltCli.CheckDoltAvailableAsync();
+            if (!doltCheck.Success)
+            {
+                return new
+                {
+                    success = false,
+                    error = "DOLT_EXECUTABLE_NOT_FOUND",
+                    message = doltCheck.Error
+                };
+            }
+
             // Check if repository is initialized
             var isInitialized = await _doltCli.IsInitializedAsync();
             if (!isInitialized)

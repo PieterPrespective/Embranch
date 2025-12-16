@@ -36,14 +36,38 @@ public class DoltInitTool
         bool import_existing = true,
         string commit_message = "Initial import from ChromaDB")
     {
+        _logger.LogInformation("[DoltInitTool.DoltInit] *** METHOD INVOKED *** - Parameters: remote_url={RemoteUrl}, initial_branch={InitialBranch}, import_existing={ImportExisting}, commit_message={CommitMessage}", 
+            remote_url ?? "<null>", initial_branch, import_existing, commit_message);
         try
         {
-            _logger.LogInformation($"[DoltInitTool.DoltInit] Initializing repository with branch={initial_branch}, import={import_existing}");
+            _logger.LogInformation($"[DoltInitTool.DoltInit] STARTING - Initializing repository with branch={initial_branch}, import={import_existing}");
+
+            // First check if Dolt is available
+            _logger.LogDebug("[DoltInitTool.DoltInit] Checking if Dolt executable is available...");
+            var doltCheck = await _doltCli.CheckDoltAvailableAsync();
+            _logger.LogDebug($"[DoltInitTool.DoltInit] Dolt availability check result: Success={doltCheck.Success}, Error='{doltCheck.Error}'");
+            
+            if (!doltCheck.Success)
+            {
+                _logger.LogError($"[DoltInitTool.DoltInit] Dolt executable not available: {doltCheck.Error}");
+                return new
+                {
+                    success = false,
+                    error = "DOLT_EXECUTABLE_NOT_FOUND",
+                    message = doltCheck.Error
+                };
+            }
+            
+            _logger.LogDebug("[DoltInitTool.DoltInit] Dolt executable is available");
 
             // Check if already initialized
+            _logger.LogDebug("[DoltInitTool.DoltInit] Checking if repository is already initialized...");
             var isInitialized = await _doltCli.IsInitializedAsync();
+            _logger.LogDebug($"[DoltInitTool.DoltInit] Repository initialization check result: {isInitialized}");
+            
             if (isInitialized)
             {
+                _logger.LogWarning("[DoltInitTool.DoltInit] Repository already initialized, returning error");
                 return new
                 {
                     success = false,
@@ -53,7 +77,20 @@ public class DoltInitTool
             }
 
             // Initialize repository
-            await _doltCli.InitAsync();
+            _logger.LogInformation("[DoltInitTool.DoltInit] Initializing new Dolt repository...");
+            var initResult = await _doltCli.InitAsync();
+            _logger.LogDebug($"[DoltInitTool.DoltInit] Init result: Success={initResult.Success}, Error='{initResult.Error}', Output='{initResult.Output}'");
+            
+            if (!initResult.Success)
+            {
+                _logger.LogError($"[DoltInitTool.DoltInit] Failed to initialize repository: {initResult.Error}");
+                return new
+                {
+                    success = false,
+                    error = "INIT_FAILED",
+                    message = $"Failed to initialize repository: {initResult.Error}"
+                };
+            }
 
             // Configure remote if provided
             bool remoteConfigured = false;
@@ -141,7 +178,8 @@ public class DoltInitTool
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error initializing repository");
+            _logger.LogError(ex, "[DoltInitTool.DoltInit] EXCEPTION - Error initializing repository. Type: {ExceptionType}, Message: {Message}", ex.GetType().Name, ex.Message);
+            _logger.LogError("[DoltInitTool.DoltInit] Stack trace: {StackTrace}", ex.StackTrace);
             return new
             {
                 success = false,
