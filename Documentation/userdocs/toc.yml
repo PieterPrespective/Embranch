@@ -2,13 +2,11 @@
   href: getting-started.md
 - name: Installation
   href: installation.md
-- name: Claude Configuration
-  href: claude-configuration.md
+- name: Configuration
+  href: configuration.md
 - name: Basic Usage
   href: basic-usage.md
-- name: Chroma Tools Reference
-  href: chroma-tools-reference.md
-- name: Chroma Configuration
-  href: chroma-configuration.md
+- name: Tools Reference
+  href: tools-reference.md
 - name: Troubleshooting
   href: troubleshooting.md

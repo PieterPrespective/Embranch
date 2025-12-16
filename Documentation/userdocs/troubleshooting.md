@@ -1,472 +1,576 @@
-# Troubleshooting DMMS
+# Troubleshooting Guide
 
-This guide helps you diagnose and fix common issues with the Dolt Multi-Database MCP Server.
+This guide helps you diagnose and resolve common issues with the VM RAG MCP Server.
 
-## Quick Diagnostics
+## Quick Diagnosis
 
-### 1. Test DMMS Executable
+### Is the Server Running?
 
-Open Command Prompt or PowerShell and run:
-```bash
-"C:\Path\To\DMMS.exe" --help
-```
+**Ask Claude:** "What version of the VM RAG server is running?"
 
-If this fails, check:
-- The path is correct
-- .NET 9.0 runtime is installed
-- The executable has proper permissions
+✅ **Working:** Claude responds with version information  
+❌ **Not working:** Claude says it doesn't have access to those tools
 
-### 2. Check .NET Installation
+### Are Tools Available?
 
-```bash
-dotnet --info
-```
+**Ask Claude:** "List my collections"
 
-You should see .NET 9.0 in the list of installed runtimes.
+✅ **Working:** Claude shows collections or empty list  
+❌ **Not working:** Claude reports an error or says it can't access the tool
 
-### 3. Verify Claude Configuration
+### Can Claude See Your Data?
 
-Check your `%APPDATA%\Claude\claude_desktop_config.json` for:
-- Correct JSON syntax
-- Proper path formatting (double backslashes)
-- No trailing commas
+**Ask Claude:** "How many documents are in my knowledge base?"
 
-## Common Issues and Solutions
+✅ **Working:** Claude reports a count  
+❌ **Not working:** Claude reports errors or no access
 
-### DMMS Not Appearing in Claude
+---
 
-**Symptoms:**
-- No MCP indicator in Claude
-- Tools not available
-- No response from DMMS commands
+## Installation & Startup Issues
 
-**Solutions:**
+### Server Won't Start
 
-1. **Verify configuration file location:**
+#### Symptom: Claude says MCP server tools aren't available
+
+**Possible Causes & Solutions:**
+
+1. **Configuration File Issues**
    ```
-   %APPDATA%\Claude\claude_desktop_config.json
+   Check: %APPDATA%\Claude\claude_desktop_config.json
    ```
+   - **Invalid JSON:** Use a JSON validator to check syntax
+   - **Wrong path:** Ensure path to `DMMS.exe` is correct with double backslashes
+   - **Missing quotes:** All string values must be in quotes
 
-2. **Check JSON syntax:**
-   ```json
-   {
-     "mcpServers": {
-       "dmms": {
-         "command": "C:\\Path\\To\\DMMS.exe"
-       }
-     }
-   }
-   ```
-
-3. **Restart Claude completely:**
-   - Exit Claude from system tray
-   - Wait 10 seconds
-   - Start Claude again
-
-### "Command Not Found" Error
-
-**Cause:** Incorrect path to DMMS.exe
-
-**Solution:**
-1. Verify the exact path to DMMS.exe
-2. Use double backslashes in the path
-3. Avoid spaces in the path if possible, or use quotes
-
-**Example with spaces:**
-```json
-{
-  "mcpServers": {
-    "dmms": {
-      "command": "\"C:\\Program Files\\DMMS\\DMMS.exe\""
-    }
-  }
-}
-```
-
-### Server Starts but Immediately Crashes
-
-**Possible causes:**
-- Missing dependencies
-- Configuration errors
-- Permission issues
-
-**Debugging steps:**
-
-1. **Run DMMS manually to see error messages:**
+2. **File Permissions**
    ```bash
-   "C:\Path\To\DMMS.exe"
+   # Test if you can run the executable directly
+   "C:\Program Files\VM-RAG-MCP\DMMS.exe" --help
+   ```
+   - **Access denied:** Run Claude as administrator or fix file permissions
+   - **File not found:** Verify the executable exists at the specified path
+
+3. **Missing Dependencies**
+   ```bash
+   # Check .NET installation
+   dotnet --list-runtimes
+   
+   # Should show: Microsoft.NETCore.App 9.0.x
+   ```
+   - **No .NET 9.0:** Install from [dotnet.microsoft.com](https://dotnet.microsoft.com/download/dotnet/9.0)
+
+4. **Python/ChromaDB Issues**
+   ```bash
+   # Test Python and ChromaDB
+   python --version
+   python -c "import chromadb; print('ChromaDB version:', chromadb.__version__)"
+   ```
+   - **Python not found:** Install Python 3.8+ from [python.org](https://python.org)
+   - **ChromaDB not found:** Run `pip install chromadb`
+   - **Version conflicts:** Try `pip install --upgrade chromadb`
+
+---
+
+#### Symptom: Server starts but crashes immediately
+
+**Check Application Logs:**
+
+If logging is enabled, check the log file:
+```
+Location: As specified in LOG_FILE_NAME environment variable
+```
+
+**Common Crash Causes:**
+
+1. **Python Context Initialization Failed**
+   ```
+   Error: "Failed to initialize Python context"
+   ```
+   **Solution:**
+   - Ensure Python is in your PATH
+   - Verify ChromaDB installation: `pip install chromadb`
+   - Try specifying Python path explicitly:
+     ```json
+     "env": {
+       "PYTHONPATH": "C:\\Python311\\Lib\\site-packages"
+     }
+     ```
+
+2. **Storage Directory Issues**
+   ```
+   Error: Access denied to storage path
+   ```
+   **Solution:**
+   - Ensure directories exist and are writable
+   - Check `CHROMA_DATA_PATH` and `DOLT_REPOSITORY_PATH` permissions
+   - Try using absolute paths instead of relative paths
+
+3. **Port Conflicts**
+   ```
+   Error: Port already in use
+   ```
+   **Solution:**
+   ```json
+   "env": {
+     "MCP_PORT": "6501",
+     "CHROMA_PORT": "8001"
+   }
    ```
 
-2. **Check Windows Event Viewer:**
-   - Press `Win + X`, select "Event Viewer"
-   - Navigate to Windows Logs > Application
-   - Look for .NET or DMMS errors
+---
 
-3. **Enable debug logging:**
+## Configuration Issues
+
+### Storage Directory Problems
+
+#### Symptom: "Permission denied" or "Access denied" errors
+
+**Solutions:**
+
+1. **Check Directory Permissions**
+   ```bash
+   # Test write access
+   echo test > "./data/test.txt"
+   del "./data/test.txt"
+   ```
+
+2. **Use Absolute Paths**
    ```json
    {
-     "mcpServers": {
-       "dmms": {
-         "command": "C:\\Path\\To\\DMMS.exe",
-         "env": {
-           "DMMS_LOG_LEVEL": "Debug"
-         }
-       }
+     "env": {
+       "CHROMA_DATA_PATH": "C:\\MyProject\\Data\\ChromaDB",
+       "DOLT_REPOSITORY_PATH": "C:\\MyProject\\Data\\DoltRepo"
      }
    }
    ```
 
-### .NET Runtime Errors
+3. **Create Directories Manually**
+   ```bash
+   mkdir "C:\MyProject\Data\ChromaDB"
+   mkdir "C:\MyProject\Data\DoltRepo"
+   ```
 
-**Error:** "The required library hostfxr.dll was not found"
-
-**Solution:**
-1. Install .NET 9.0 Runtime: https://dotnet.microsoft.com/download/dotnet/9.0
-2. Choose the x64 version for 64-bit Windows
-3. Restart your computer after installation
-
-### Permission Denied Errors
-
-**Symptoms:**
-- "Access is denied" errors
-- Unable to execute DMMS.exe
-
-**Solutions:**
-
-1. **Check file permissions:**
-   - Right-click DMMS.exe
-   - Select Properties > Security
-   - Ensure your user has "Read & Execute" permission
-
-2. **Unblock the file (if downloaded):**
-   - Right-click DMMS.exe
-   - Select Properties
-   - Check for "Unblock" checkbox at the bottom
-   - Click "Unblock" if present
-
-3. **Run Claude as Administrator (last resort):**
+4. **Run Claude as Administrator**
    - Right-click Claude Desktop
    - Select "Run as administrator"
 
-### Tools Not Working
+#### Symptom: Data disappears after restart
 
-**Symptom:** Claude says tools are not available or not responding
+**Causes:**
+- Using relative paths that resolve differently
+- Temporary directories being cleaned up
+- Multiple server instances with different data paths
 
-**Debugging:**
-
-1. **Check if DMMS is running:**
-   - Open Task Manager
-   - Look for DMMS.exe in the processes
-
-2. **Test with a simple command:**
-   Ask Claude: "Can you get the DMMS server version?"
-
-3. **Check for error messages in Claude's response**
-
-## Logging and Debugging
-
-### Enable Verbose Logging
-
-Add to your configuration:
+**Solution:** Use absolute paths in configuration:
 ```json
 {
-  "mcpServers": {
-    "dmms": {
-      "command": "C:\\Path\\To\\DMMS.exe",
-      "args": ["--verbose"],
-      "env": {
-        "DMMS_LOG_LEVEL": "Debug",
-        "DMMS_LOG_FILE": "C:\\Logs\\dmms.log"
-      }
-    }
+  "env": {
+    "CHROMA_DATA_PATH": "C:\\PermanentLocation\\ChromaDB",
+    "DOLT_REPOSITORY_PATH": "C:\\PermanentLocation\\DoltRepo"
   }
 }
 ```
 
-### Log File Locations
+---
 
-Default log locations:
-- DMMS logs: `%TEMP%\DMMS\logs\`
-- Claude logs: `%APPDATA%\Claude\logs\`
+### Dolt Configuration Issues
 
-### Reading Log Files
-
-Look for:
-- ERROR level messages
-- Stack traces
-- Connection failures
-- Tool execution errors
-
-## Getting Further Help
-
-If you're still experiencing issues:
-
-1. **Collect diagnostic information:**
-   - DMMS version (`DMMS.exe --version`)
-   - .NET version (`dotnet --info`)
-   - Claude Desktop version
-   - Complete error messages
-   - Relevant log entries
-
-2. **Check for updates:**
-   - Latest DMMS release
-   - Latest Claude Desktop version
-   - .NET runtime updates
-
-3. **Report issues:**
-   - GitHub Issues page
-   - Include diagnostic information
-   - Provide reproduction steps
-
-## Chroma-Specific Troubleshooting
-
-### Chroma Collection Issues
-
-**Issue:** "Collection does not exist" error
+#### Symptom: "DOLT_EXECUTABLE_PATH not found" errors
 
 **Solutions:**
-1. **List available collections first:**
-   ```
-   Can you list all my Chroma collections?
+
+1. **Install Dolt**
+   - Download from [dolthub.com](https://www.dolthub.com/docs/getting-started/installation/)
+   - Add to PATH or specify full path
+
+2. **Specify Full Path**
+   ```json
+   {
+     "env": {
+       "DOLT_EXECUTABLE_PATH": "C:\\Program Files\\Dolt\\bin\\dolt.exe"
+     }
+   }
    ```
 
-2. **Check collection name spelling:**
+3. **Test Dolt Installation**
+   ```bash
+   "C:\Program Files\Dolt\bin\dolt.exe" version
+   ```
+
+#### Symptom: Authentication failed with DoltHub
+
+**Solutions:**
+
+1. **Login to Dolt**
+   ```bash
+   "C:\Program Files\Dolt\bin\dolt.exe" login
+   ```
+
+2. **Check Credentials**
+   ```bash
+   "C:\Program Files\Dolt\bin\dolt.exe" creds ls
+   ```
+
+3. **Verify Remote URL Format**
+   - Correct: `myorg/my-repo`
+   - Correct: `https://doltremoteapi.dolthub.com/myorg/my-repo`
+   - Incorrect: `https://dolthub.com/myorg/my-repo` (this is web UI URL)
+
+---
+
+## Runtime Issues
+
+### ChromaDB Operations Failing
+
+#### Symptom: "Collection not found" errors
+
+**Solutions:**
+
+1. **List Available Collections**
+   ```
+   Ask Claude: "List my collections"
+   ```
+
+2. **Check Collection Names**
    - Collection names are case-sensitive
-   - Avoid special characters
+   - No spaces in names (use underscores)
+   - Alphanumeric characters only
 
-3. **In persistent mode, check directory structure:**
+3. **Create Missing Collection**
    ```
-   {CHROMA_DATA_PATH}/
-   ├── collection_name/
-   │   ├── metadata.json
-   │   └── documents.jsonl
+   Ask Claude: "Create a collection named vmrag_main"
    ```
 
-### Chroma Document Issues
+#### Symptom: Search returns no results
 
-**Issue:** "Document ID already exists" error
+**Possible Causes:**
 
-**Solution:** Use unique document IDs or delete existing document first:
+1. **Empty Collection**
+   ```
+   Ask Claude: "How many documents are in my collection?"
+   ```
+
+2. **Embedding Model Mismatch**
+   - Documents added with one model won't match queries from another
+   - Solution: Recreate collection with consistent embedding model
+
+3. **Query Too Specific**
+   ```
+   Instead of: "exact phrase match"
+   Try: "main concepts or keywords"
+   ```
+
+4. **Wrong Collection**
+   ```
+   Ask Claude: "Which collections contain documents about [topic]?"
+   ```
+
+---
+
+### Version Control Issues
+
+#### Symptom: "NOT_INITIALIZED" errors
+
+**Solutions:**
+
+1. **Initialize Repository**
+   ```
+   Ask Claude: "Initialize a new knowledge base"
+   ```
+
+2. **Clone Existing Repository**
+   ```
+   Ask Claude: "Clone the knowledge base from myorg/my-repo"
+   ```
+
+3. **Check Repository Status**
+   ```
+   Ask Claude: "What's the status of my repository?"
+   ```
+
+#### Symptom: "UNCOMMITTED_CHANGES" blocks operations
+
+**Understanding the Issue:**
+When you have uncommitted changes, certain operations (pull, checkout, reset) are blocked to prevent data loss.
+
+**Solutions:**
+
+1. **Commit Your Changes**
+   ```
+   Ask Claude: "Commit my changes with message 'Work in progress'"
+   ```
+
+2. **Discard Changes**
+   ```
+   Ask Claude: "Discard all my uncommitted changes"
+   ```
+
+3. **Stash Changes (via pull/checkout with parameters)**
+   ```
+   Ask Claude: "Pull the latest changes and commit my work first"
+   ```
+
+#### Symptom: "REMOTE_REJECTED" on push
+
+**Causes:**
+- Remote has commits you don't have locally
+- Branch protection rules
+- Authentication issues
+
+**Solutions:**
+
+1. **Pull First**
+   ```
+   Ask Claude: "Pull the latest changes, then push"
+   ```
+
+2. **Check Remote Status**
+   ```
+   Ask Claude: "Fetch updates and show me the status"
+   ```
+
+3. **Force Push (Dangerous)**
+   ```
+   Only if you're sure you want to overwrite remote:
+   Ask Claude: "Force push my changes" 
+   (Claude should warn you about this)
+   ```
+
+---
+
+## Performance Issues
+
+### Slow Operations
+
+#### Symptom: Document operations take too long
+
+**Causes & Solutions:**
+
+1. **Large Collection Size**
+   - **Problem:** Collections with >100,000 documents can be slow
+   - **Solution:** Split into smaller, topic-specific collections
+
+2. **Large Documents**
+   - **Problem:** Very large documents (>50KB) slow down embedding
+   - **Solution:** Break large documents into smaller sections
+
+3. **Storage on Slow Disk**
+   - **Problem:** Hard drives slower than SSDs
+   - **Solution:** Move data directories to SSD
+
+4. **Insufficient RAM**
+   - **Problem:** ChromaDB loads collections into memory
+   - **Solution:** 
+     - Reduce collection sizes
+     - Increase system RAM
+     - Use client mode instead of persistent mode
+
+#### Symptom: Branch switching takes forever
+
+**Causes:**
+- Large number of documents need re-embedding
+- Slow disk I/O
+- Network issues if using client mode
+
+**Solutions:**
+
+1. **Use Smaller Collections**
+2. **Switch to SSD Storage**
+3. **Enable Verbose Logging** to see what's happening:
+   ```json
+   {
+     "env": {
+       "ENABLE_LOGGING": "true",
+       "LOG_LEVEL": "Debug"
+     }
+   }
+   ```
+
+---
+
+## Data Integrity Issues
+
+### Missing Documents After Operations
+
+#### Symptom: Documents disappear after branch switch
+
+**This is Normal Behavior:**
+- Different branches contain different document sets
+- Switching branches updates ChromaDB to match that branch's content
+
+**To Verify:**
+1. **Check Current Branch**
+   ```
+   Ask Claude: "What branch am I on and what's the status?"
+   ```
+
+2. **List Documents in Different Branches**
+   ```
+   Ask Claude: "Switch to main branch and show me the document count"
+   Ask Claude: "Switch to feature branch and show me the document count"
+   ```
+
+3. **View Commit History**
+   ```
+   Ask Claude: "Show me the recent commits to understand what changed"
+   ```
+
+#### Symptom: Documents lost after reset/pull
+
+**Possible Causes:**
+
+1. **Reset Discarded Uncommitted Changes**
+   - **Prevention:** Always commit before resetting
+   - **Recovery:** Check if documents are in version history
+
+2. **Pull Brought in Different Version**
+   - **Check:** Compare commits before and after pull
+   - **Recovery:** Checkout previous commit if needed
+
+3. **Merge Conflict Resolution**
+   - **Check:** Look for conflict resolution in recent commits
+   - **Recovery:** May need manual recovery from backups
+
+---
+
+## Diagnostic Commands
+
+### System Information Gathering
+
+When reporting issues, gather this information:
+
+```bash
+# .NET version
+dotnet --info
+
+# Python version
+python --version
+
+# ChromaDB version  
+python -c "import chromadb; print(chromadb.__version__)"
+
+# Dolt version
+"C:\Program Files\Dolt\bin\dolt.exe" version
+
+# Server version (ask Claude)
+"What version of the VM RAG server is running?"
+
+# Configuration check
+type "%APPDATA%\Claude\claude_desktop_config.json"
 ```
-Delete the document with ID "duplicate_id" from "my_collection", then try adding again
-```
 
-**Issue:** Documents not found in search
+### Log Analysis
 
-**Debugging steps:**
-1. **Check document was added successfully:**
-   ```
-   How many documents are in my "collection_name" collection?
-   ```
+Enable detailed logging for troubleshooting:
 
-2. **Verify search terms:**
-   - Use exact words from document content
-   - Try broader search terms
-
-3. **In persistent mode, check documents.jsonl format:**
-   - Each line should be valid JSON
-   - No empty lines between documents
-
-### Chroma Storage Issues
-
-**Issue:** Permission denied accessing Chroma data directory
-
-**Solutions:**
-1. **Check directory permissions:**
-   ```powershell
-   icacls "C:\Path\To\ChromaData" /grant "%USERNAME%:(F)"
-   ```
-
-2. **Ensure directory exists:**
-   ```powershell
-   mkdir "C:\Path\To\ChromaData"
-   ```
-
-3. **Update CHROMA_DATA_PATH to writable location:**
-   ```json
-   {
-     "env": {
-       "CHROMA_DATA_PATH": "%USERPROFILE%\\Documents\\ChromaData"
-     }
-   }
-   ```
-
-### Chroma Server Mode Issues
-
-**Issue:** Connection refused to ChromaDB server
-
-**Debugging steps:**
-1. **Verify ChromaDB server is running:**
-   ```bash
-   curl http://localhost:8000/api/v1/heartbeat
-   ```
-
-2. **Check server configuration:**
-   ```json
-   {
-     "env": {
-       "CHROMA_MODE": "server",
-       "CHROMA_HOST": "localhost",
-       "CHROMA_PORT": "8000"
-     }
-   }
-   ```
-
-3. **Start ChromaDB server if needed:**
-   ```bash
-   pip install chromadb
-   chroma run --host localhost --port 8000
-   ```
-
-**Issue:** ChromaDB server timeouts
-
-**Solutions:**
-1. **Increase timeout values:**
-   ```json
-   {
-     "env": {
-       "CONNECTION_TIMEOUT": "60.0",
-       "MAX_RETRIES": "5"
-     }
-   }
-   ```
-
-2. **Check network connectivity:**
-   ```bash
-   ping your-chroma-host
-   ```
-
-### Chroma Data Corruption
-
-**Issue:** Invalid JSON in documents.jsonl
-
-**Solutions:**
-1. **Backup corrupted file:**
-   ```powershell
-   copy "documents.jsonl" "documents.jsonl.backup"
-   ```
-
-2. **Remove malformed lines:**
-   - Open documents.jsonl in text editor
-   - Look for lines that don't start/end with `{}`
-   - Remove or fix malformed JSON lines
-
-3. **Recreate collection if severely corrupted:**
-   ```
-   Delete the "corrupted_collection" and create a new one with the same name
-   ```
-
-### Chroma Performance Issues
-
-**Issue:** Slow query performance in persistent mode
-
-**Solutions:**
-1. **Reduce collection size:**
-   - Split large collections into smaller ones
-   - Remove unused documents
-
-2. **Use more specific search terms:**
-   - Avoid very common words
-   - Use multiple relevant keywords
-
-3. **Consider switching to server mode:**
-   ```json
-   {
-     "env": {
-       "CHROMA_MODE": "server"
-     }
-   }
-   ```
-
-**Issue:** Memory usage growing over time
-
-**Solutions:**
-1. **Restart DMMS periodically:**
-   - Exit and restart Claude Desktop
-   - Memory will be cleared
-
-2. **Monitor collection sizes:**
-   ```
-   Can you show me the document count for all my collections?
-   ```
-
-### Chroma Configuration Validation
-
-**Test Configuration:**
 ```json
 {
-  "mcpServers": {
-    "dmms-test": {
-      "command": "C:\\Path\\To\\DMMS.exe",
-      "env": {
-        "CHROMA_MODE": "persistent",
-        "CHROMA_DATA_PATH": "./test_chroma_data",
-        "ENABLE_LOGGING": "true",
-        "LOG_LEVEL": "Debug"
-      }
-    }
+  "env": {
+    "ENABLE_LOGGING": "true",
+    "LOG_LEVEL": "Debug",
+    "LOG_FILE_NAME": "./logs/vm-rag-debug.log"
   }
 }
 ```
 
-**Validation Steps:**
-1. Test server startup
-2. Create a test collection
-3. Add a test document
-4. Query the document
-5. Delete the test collection
+**Key log patterns to look for:**
 
-### Chroma Migration Issues
+- `Failed to initialize Python context` → Python/ChromaDB issues
+- `Access denied` → Permission problems
+- `Collection not found` → ChromaDB issues
+- `Command not found` → Dolt installation issues
+- `Authentication failed` → DoltHub credential issues
 
-**Issue:** Moving from persistent to server mode
+---
 
-**Steps:**
-1. **Export data from persistent mode:**
-   - Backup your CHROMA_DATA_PATH directory
-   - Note all collection names and document IDs
+## Recovery Procedures
 
-2. **Setup ChromaDB server:**
-   - Install and start ChromaDB server
-   - Verify connectivity
+### Complete Reset
 
-3. **Update configuration to server mode:**
-   ```json
-   {
-     "env": {
-       "CHROMA_MODE": "server",
-       "CHROMA_HOST": "localhost",
-       "CHROMA_PORT": "8000"
-     }
-   }
+If everything is broken and you want to start fresh:
+
+1. **Stop Claude Desktop**
+2. **Remove Data Directories**
+   ```bash
+   rd /s /q "./data"
+   rd /s /q "./chroma_data"  
+   ```
+3. **Restart Claude Desktop**
+4. **Re-initialize**
+   ```
+   Ask Claude: "Initialize a new knowledge base"
    ```
 
-4. **Manually recreate collections and add documents**
+### Backup and Restore
 
-## Frequently Asked Questions
+#### Creating Backups
 
-**Q: Can I use DMMS with Claude.ai web version?**
-A: No, MCP servers only work with Claude Desktop application.
+1. **Data Directories** (copy these folders):
+   - ChromaDB data: `CHROMA_DATA_PATH` folder
+   - Dolt repository: `DOLT_REPOSITORY_PATH` folder
 
-**Q: Does DMMS work on Windows 11?**
-A: Yes, DMMS is compatible with Windows 10 and Windows 11.
+2. **DoltHub Sync** (automatic backup):
+   ```
+   Ask Claude: "Push all my changes to DoltHub"
+   ```
 
-**Q: Can I run multiple instances of DMMS?**
-A: Yes, you can configure multiple instances with different names in the configuration.
+#### Restoring from Backup
 
-**Q: How do I update DMMS?**
-A: Download the latest release and replace the executable, then restart Claude Desktop.
+1. **From Directory Backup:**
+   - Stop Claude Desktop
+   - Replace data directories with backup copies
+   - Restart Claude Desktop
 
-**Q: Is DMMS compatible with WSL?**
-A: DMMS runs natively on Windows. For WSL compatibility, see the WSL documentation.
+2. **From DoltHub:**
+   ```
+   Ask Claude: "Clone the knowledge base from myorg/my-repo"
+   ```
 
-**Q: Can I use both Chroma modes simultaneously?**
-A: Yes, configure multiple DMMS instances with different names and modes.
+---
 
-**Q: What's the maximum collection size for persistent mode?**
-A: While there's no hard limit, performance degrades significantly above 10,000 documents per collection.
+## Getting Additional Help
 
-**Q: Can I backup my Chroma data?**
-A: In persistent mode, simply backup the CHROMA_DATA_PATH directory. For server mode, follow ChromaDB backup procedures.
+### Before Reporting Issues
 
-**Q: How do I migrate between Chroma modes?**
-A: Currently requires manual export/import of data. See Chroma Migration Issues section above.
+1. ✅ Check this troubleshooting guide
+2. ✅ Verify your configuration matches the examples
+3. ✅ Test with a fresh data directory
+4. ✅ Gather diagnostic information (versions, logs, config)
+
+### Reporting Issues
+
+Include this information:
+
+- **Problem description:** What you were trying to do and what happened
+- **Error messages:** Exact text of any error messages
+- **Configuration:** Your `claude_desktop_config.json` (remove sensitive info)
+- **Environment:** OS version, .NET version, Python version, ChromaDB version
+- **Steps to reproduce:** Minimal steps to recreate the problem
+- **Log files:** Relevant portions of debug logs
+
+### Community Resources
+
+- **Documentation:** This guide and other documentation files
+- **GitHub Issues:** Project repository issue tracker
+- **DoltHub Docs:** [docs.dolthub.com](https://docs.dolthub.com) for Dolt-specific issues
+- **ChromaDB Docs:** [docs.trychroma.com](https://docs.trychroma.com) for ChromaDB issues
+
+---
+
+## Common "It's Working Now" Solutions
+
+Sometimes these simple steps fix mysterious issues:
+
+1. **Restart Claude Desktop** (completely quit and restart)
+2. **Restart your computer** (clears memory and temporary issues)
+3. **Update dependencies** (`pip install --upgrade chromadb`)
+4. **Clear temporary files** (delete and recreate data directories)
+5. **Run as administrator** (fixes permission issues)
+6. **Use absolute paths** (resolves path confusion)
+7. **Check for Windows updates** (can fix .NET issues)
+8. **Reinstall .NET 9.0 Runtime** (fixes corrupted installations)
+
+---
+
+*If you're still having issues after trying these solutions, please report the problem with as much detail as possible including error messages, configuration, and steps to reproduce.*

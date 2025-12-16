@@ -39,14 +39,45 @@ builder.Services.AddSingleton<IDoltCli, DoltCli>();
 builder.Services
     .AddMcpServer()
     .WithStdioServerTransport()
+    // Server Management Tools
     .WithTools<GetServerVersionTool>()
+    
+    // ChromaDB Collection Management Tools
     .WithTools<ChromaListCollectionsTool>()
     .WithTools<ChromaCreateCollectionTool>()
     .WithTools<ChromaDeleteCollectionTool>()
+    .WithTools<ChromaGetCollectionCountTool>()
+    .WithTools<ChromaGetCollectionInfoTool>()
+    .WithTools<ChromaModifyCollectionTool>()
+    .WithTools<ChromaPeekCollectionTool>()
+    
+    // ChromaDB Document Operations Tools  
     .WithTools<ChromaAddDocumentsTool>()
     .WithTools<ChromaQueryDocumentsTool>()
-    .WithTools<ChromaGetCollectionCountTool>()
-    .WithTools<ChromaDeleteDocumentsTool>();
+    .WithTools<ChromaGetDocumentsTool>()
+    .WithTools<ChromaUpdateDocumentsTool>()
+    .WithTools<ChromaDeleteDocumentsTool>()
+    
+    // Dolt Version Control Tools - Status and Information
+    .WithTools<DoltStatusTool>()
+    .WithTools<DoltBranchesTool>()
+    .WithTools<DoltCommitsTool>()
+    .WithTools<DoltShowTool>()
+    .WithTools<DoltFindTool>()
+    
+    // Dolt Version Control Tools - Repository Setup
+    .WithTools<DoltInitTool>()
+    .WithTools<DoltCloneTool>()
+    
+    // Dolt Version Control Tools - Remote Synchronization
+    .WithTools<DoltFetchTool>()
+    .WithTools<DoltPullTool>()
+    .WithTools<DoltPushTool>()
+    
+    // Dolt Version Control Tools - Local Operations
+    .WithTools<DoltCommitTool>()
+    .WithTools<DoltCheckoutTool>()
+    .WithTools<DoltResetTool>();
 
 var host = builder.Build();
 
