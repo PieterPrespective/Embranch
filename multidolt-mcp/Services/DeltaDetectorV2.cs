@@ -378,6 +378,9 @@ namespace DMMS.Services
         /// </summary>
         public async Task UpdateSyncStateAsync(string collectionName, string commitHash, int documentCount, int chunkCount)
         {
+            // Ensure collection exists in collections table before updating sync state
+            await EnsureCollectionExistsAsync(collectionName);
+
             var sql = $@"
                 INSERT INTO chroma_sync_state 
                     (collection_name, last_sync_commit, last_sync_at, document_count, chunk_count, sync_status)
@@ -439,6 +442,47 @@ namespace DMMS.Services
             {
                 _logger?.LogError(ex, "Failed to record sync operation for document {DocId}", docId);
                 throw new DoltException($"Failed to record sync operation: {ex.Message}", ex);
+            }
+        }
+
+        /// <summary>
+        /// Ensures that a collection exists in the Dolt collections table before sync operations
+        /// </summary>
+        private async Task EnsureCollectionExistsAsync(string collectionName)
+        {
+            try
+            {
+                _logger?.LogDebug("Ensuring collection '{Collection}' exists in Dolt database", collectionName);
+
+                // Use INSERT IGNORE to create collection only if it doesn't exist
+                var insertSql = $@"
+                    INSERT IGNORE INTO collections (
+                        collection_name,
+                        display_name,
+                        description,
+                        embedding_model,
+                        chunk_size,
+                        chunk_overlap,
+                        document_count,
+                        metadata
+                    ) VALUES (
+                        '{collectionName}',
+                        '{collectionName}',
+                        'Collection auto-created during sync operation',
+                        'default',
+                        512,
+                        50,
+                        0,
+                        JSON_OBJECT('created_by', 'auto_sync', 'created_at', NOW())
+                    )";
+                
+                await _dolt.ExecuteAsync(insertSql);
+                _logger?.LogDebug("Ensured collection '{Collection}' exists in Dolt database", collectionName);
+            }
+            catch (Exception ex)
+            {
+                _logger?.LogError(ex, "Failed to ensure collection '{Collection}' exists in Dolt database", collectionName);
+                throw new InvalidOperationException($"Failed to create collection '{collectionName}' in Dolt: {ex.Message}", ex);
             }
         }
     }

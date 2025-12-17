@@ -120,7 +120,8 @@ namespace DMMSTesting.IntegrationTests
             user.DoltFetchTool = new DoltFetchTool(
                 loggerFactory.CreateLogger<DoltFetchTool>(), user.DoltCli);
             user.DoltCloneTool = new DoltCloneTool(
-                loggerFactory.CreateLogger<DoltCloneTool>(), user.DoltCli, user.SyncManager);
+                loggerFactory.CreateLogger<DoltCloneTool>(), user.DoltCli, user.SyncManager, 
+                Options.Create(new DoltConfiguration { RepositoryPath = user.DoltRepoPath, DoltExecutablePath = "dolt" }));
             user.DoltResetTool = new DoltResetTool(
                 loggerFactory.CreateLogger<DoltResetTool>(), user.DoltCli, user.SyncManager);
             user.DoltShowTool = new DoltShowTool(

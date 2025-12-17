@@ -1,4 +1,5 @@
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using ModelContextProtocol.Server;
 using System.ComponentModel;
 using DMMS.Services;
@@ -15,15 +16,17 @@ public class DoltCloneTool
     private readonly ILogger<DoltCloneTool> _logger;
     private readonly IDoltCli _doltCli;
     private readonly ISyncManagerV2 _syncManager;
+    private readonly string _repositoryPath;
 
     /// <summary>
     /// Initializes a new instance of the DoltCloneTool class
     /// </summary>
-    public DoltCloneTool(ILogger<DoltCloneTool> logger, IDoltCli doltCli, ISyncManagerV2 syncManager)
+    public DoltCloneTool(ILogger<DoltCloneTool> logger, IDoltCli doltCli, ISyncManagerV2 syncManager, IOptions<DoltConfiguration> config)
     {
         _logger = logger;
         _doltCli = doltCli;
         _syncManager = syncManager;
+        _repositoryPath = config.Value.RepositoryPath;
     }
 
     /// <summary>
@@ -94,7 +97,9 @@ public class DoltCloneTool
             }
 
             // Clone the repository and check for success
-            var cloneResult = await _doltCli.CloneAsync(formattedUrl, branch);
+            // IMPORTANT: Pass "." to clone into the current directory (_repositoryPath), not a subdirectory
+            // This prevents the duplicate database issue where a subdirectory would be created
+            var cloneResult = await _doltCli.CloneAsync(formattedUrl, ".");
             bool isCloneSuccessful = cloneResult.Success;
             bool remoteConfigured = false;
             
@@ -117,12 +122,33 @@ public class DoltCloneTool
                     // Try fallback: initialize repository and manually add remote
                     try
                     {
-                        // First, check if repository was partially initialized
+                        // Clean up any corrupted .dolt directory from failed clone
+                        fallbackStep = "cleaning corrupted repository";
+                        _logger.LogInformation($"[DoltCloneTool.DoltClone] Fallback step: {fallbackStep}");
+                        
+                        // Use the configured repository path
+                        var doltDir = Path.Combine(_repositoryPath, ".dolt");
+                        
+                        if (Directory.Exists(doltDir))
+                        {
+                            _logger.LogInformation($"[DoltCloneTool.DoltClone] Found corrupted .dolt directory at '{doltDir}' from failed clone, removing it");
+                            try
+                            {
+                                Directory.Delete(doltDir, true);
+                                _logger.LogInformation($"[DoltCloneTool.DoltClone] ✓ Successfully removed corrupted .dolt directory");
+                            }
+                            catch (Exception cleanupEx)
+                            {
+                                _logger.LogWarning(cleanupEx, $"[DoltCloneTool.DoltClone] Failed to remove corrupted .dolt directory: {cleanupEx.Message}");
+                            }
+                        }
+                        
+                        // Now check if repository can be initialized
                         fallbackStep = "checking initialization status";
                         _logger.LogInformation($"[DoltCloneTool.DoltClone] Fallback step: {fallbackStep}");
                         
                         var isPartiallyInitialized = await _doltCli.IsInitializedAsync();
-                        _logger.LogInformation($"[DoltCloneTool.DoltClone] Repository initialization status: {isPartiallyInitialized}");
+                        _logger.LogInformation($"[DoltCloneTool.DoltClone] Repository initialization status after cleanup: {isPartiallyInitialized}");
                         
                         if (!isPartiallyInitialized)
                         {
@@ -135,14 +161,26 @@ public class DoltCloneTool
                             
                             if (!initResult.Success)
                             {
-                                _logger.LogError($"[DoltCloneTool.DoltClone] ❌ Fallback init failed at step '{fallbackStep}': {initResult.Error}");
-                                throw new Exception($"Failed to initialize repository: {initResult.Error}");
+                                // Check if the error is because it's already initialized (from partial clone)
+                                if (initResult.Error?.Contains("already been initialized", StringComparison.OrdinalIgnoreCase) == true)
+                                {
+                                    _logger.LogInformation($"[DoltCloneTool.DoltClone] Repository was partially initialized by failed clone, continuing with remote setup");
+                                    isPartiallyInitialized = true;
+                                }
+                                else
+                                {
+                                    _logger.LogError($"[DoltCloneTool.DoltClone] ❌ Fallback init failed at step '{fallbackStep}': {initResult.Error}");
+                                    throw new Exception($"Failed to initialize repository: {initResult.Error}");
+                                }
                             }
-                            _logger.LogInformation($"[DoltCloneTool.DoltClone] ✓ Repository initialized successfully");
+                            else
+                            {
+                                _logger.LogInformation($"[DoltCloneTool.DoltClone] ✓ Repository initialized successfully");
+                            }
                         }
                         else
                         {
-                            _logger.LogInformation($"[DoltCloneTool.DoltClone] ✓ Repository already partially initialized, proceeding with remote setup");
+                            _logger.LogInformation($"[DoltCloneTool.DoltClone] ✓ Repository already partially initialized (from failed clone), proceeding with remote setup");
                         }
                         
                         // Add the remote manually (similar to DoltInitTool)
@@ -215,6 +253,12 @@ public class DoltCloneTool
                                 
                                 remoteConfigured = true;
                                 _logger.LogInformation($"[DoltCloneTool.DoltClone] ✓ Fallback successful: Repository initialized with initial commits and remote 'origin' configured");
+                                
+                                // Create the required database schema for sync operations
+                                await CreateSyncDatabaseSchemaAsync();
+                                
+                                // Initialize sync state
+                                await InitializeSyncStateAsync();
                             }
                             catch (Exception commitEx)
                             {
@@ -323,6 +367,30 @@ public class DoltCloneTool
             {
                 remoteConfigured = true; // Clone succeeded, remote should be set automatically
                 _logger.LogInformation($"[DoltCloneTool.DoltClone] Clone succeeded from '{formattedUrl}'");
+                
+                // If a specific branch was requested, checkout to it after successful clone
+                if (!string.IsNullOrEmpty(branch))
+                {
+                    _logger.LogInformation($"[DoltCloneTool.DoltClone] Checking out to requested branch: '{branch}'");
+                    try
+                    {
+                        var checkoutResult = await _doltCli.CheckoutAsync(branch, false);
+                        if (checkoutResult.Success)
+                        {
+                            _logger.LogInformation($"[DoltCloneTool.DoltClone] ✓ Successfully checked out to branch '{branch}'");
+                        }
+                        else
+                        {
+                            _logger.LogWarning($"[DoltCloneTool.DoltClone] Failed to checkout to branch '{branch}': {checkoutResult.Error}");
+                            // Don't fail the entire operation if branch checkout fails - repository is still usable
+                        }
+                    }
+                    catch (Exception branchEx)
+                    {
+                        _logger.LogWarning(branchEx, $"[DoltCloneTool.DoltClone] Exception checking out to branch '{branch}'");
+                        // Don't fail the entire operation if branch checkout fails
+                    }
+                }
             }
 
             // Get current state after clone (handle empty repositories)
@@ -449,6 +517,305 @@ public class DoltCloneTool
                 error = errorCode,
                 message = $"Failed to clone repository: {ex.Message}"
             };
+        }
+    }
+
+    /// <summary>
+    /// Creates the required database schema for sync operations after fallback initialization
+    /// </summary>
+    private async Task CreateSyncDatabaseSchemaAsync()
+    {
+        try
+        {
+            _logger.LogInformation("[DoltCloneTool.CreateSyncDatabaseSchemaAsync] Creating database schema for sync operations");
+
+            // Create collections table
+            var createCollectionsTableSql = @"
+CREATE TABLE IF NOT EXISTS collections (
+    collection_name VARCHAR(255) PRIMARY KEY,
+    display_name VARCHAR(255),
+    description TEXT,
+    embedding_model VARCHAR(100) DEFAULT 'default',
+    chunk_size INT DEFAULT 512,
+    chunk_overlap INT DEFAULT 50,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    document_count INT DEFAULT 0,
+    metadata JSON,
+    
+    INDEX idx_created_at (created_at),
+    INDEX idx_updated_at (updated_at)
+)";
+            await _doltCli.ExecuteAsync(createCollectionsTableSql);
+            _logger.LogInformation("[DoltCloneTool.CreateSyncDatabaseSchemaAsync] ✓ Created collections table");
+
+            // Create documents table
+            var createDocumentsTableSql = @"
+CREATE TABLE IF NOT EXISTS documents (
+    doc_id VARCHAR(64) NOT NULL,
+    collection_name VARCHAR(255) NOT NULL,
+    content LONGTEXT NOT NULL,
+    content_hash CHAR(64) NOT NULL,
+    title VARCHAR(500),
+    doc_type VARCHAR(100),
+    metadata JSON NOT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    
+    PRIMARY KEY (doc_id, collection_name),
+    FOREIGN KEY (collection_name) REFERENCES collections(collection_name) ON DELETE CASCADE,
+    INDEX idx_content_hash (content_hash),
+    INDEX idx_title (title),
+    INDEX idx_doc_type (doc_type),
+    INDEX idx_created_at (created_at),
+    INDEX idx_updated_at (updated_at)
+)";
+            await _doltCli.ExecuteAsync(createDocumentsTableSql);
+            _logger.LogInformation("[DoltCloneTool.CreateSyncDatabaseSchemaAsync] ✓ Created documents table");
+
+            // Create chroma_sync_state table
+            var createChromaSyncStateSql = @"
+CREATE TABLE IF NOT EXISTS chroma_sync_state (
+    collection_name VARCHAR(255) PRIMARY KEY,
+    last_sync_commit VARCHAR(40),
+    last_sync_at DATETIME,
+    document_count INT DEFAULT 0,
+    chunk_count INT DEFAULT 0,
+    embedding_model VARCHAR(100),
+    sync_status ENUM('synced', 'pending', 'error', 'in_progress', 'local_changes') DEFAULT 'pending',
+    local_changes_count INT DEFAULT 0,
+    error_message TEXT,
+    metadata JSON,
+    
+    FOREIGN KEY (collection_name) REFERENCES collections(collection_name) ON DELETE CASCADE,
+    INDEX idx_sync_status (sync_status),
+    INDEX idx_last_sync_at (last_sync_at)
+)";
+            await _doltCli.ExecuteAsync(createChromaSyncStateSql);
+            _logger.LogInformation("[DoltCloneTool.CreateSyncDatabaseSchemaAsync] ✓ Created chroma_sync_state table");
+
+            // Create document_sync_log table
+            var createDocumentSyncLogSql = @"
+CREATE TABLE IF NOT EXISTS document_sync_log (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    doc_id VARCHAR(64) NOT NULL,
+    collection_name VARCHAR(255) NOT NULL,
+    content_hash CHAR(64) NOT NULL,
+    chroma_chunk_ids JSON,
+    synced_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    sync_direction ENUM('dolt_to_chroma', 'chroma_to_dolt') NOT NULL,
+    sync_action ENUM('added', 'modified', 'deleted', 'staged') NOT NULL,
+    embedding_model VARCHAR(100),
+    
+    UNIQUE KEY uk_doc_collection (doc_id, collection_name),
+    FOREIGN KEY (collection_name) REFERENCES collections(collection_name) ON DELETE CASCADE,
+    INDEX idx_content_hash (content_hash),
+    INDEX idx_synced_at (synced_at),
+    INDEX idx_sync_direction (sync_direction)
+)";
+            await _doltCli.ExecuteAsync(createDocumentSyncLogSql);
+            _logger.LogInformation("[DoltCloneTool.CreateSyncDatabaseSchemaAsync] ✓ Created document_sync_log table");
+
+            // Create local_changes table
+            var createLocalChangesSql = @"
+CREATE TABLE IF NOT EXISTS local_changes (
+    doc_id VARCHAR(64) NOT NULL,
+    collection_name VARCHAR(255) NOT NULL,
+    change_type ENUM('new', 'modified', 'deleted') NOT NULL,
+    detected_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    content_hash_chroma CHAR(64),
+    content_hash_dolt CHAR(64),
+    metadata JSON,
+    
+    PRIMARY KEY (doc_id, collection_name),
+    FOREIGN KEY (collection_name) REFERENCES collections(collection_name) ON DELETE CASCADE,
+    INDEX idx_change_type (change_type),
+    INDEX idx_detected_at (detected_at)
+)";
+            await _doltCli.ExecuteAsync(createLocalChangesSql);
+            _logger.LogInformation("[DoltCloneTool.CreateSyncDatabaseSchemaAsync] ✓ Created local_changes table");
+
+            // Create sync_operations table (optional but useful for auditing)
+            var createSyncOperationsSql = @"
+CREATE TABLE IF NOT EXISTS sync_operations (
+    operation_id INT AUTO_INCREMENT PRIMARY KEY,
+    operation_type ENUM('init', 'commit', 'push', 'pull', 'merge', 'checkout', 'reset', 'stage') NOT NULL,
+    dolt_branch VARCHAR(255) NOT NULL,
+    dolt_commit_before VARCHAR(40),
+    dolt_commit_after VARCHAR(40),
+    chroma_collections_affected JSON,
+    documents_added INT DEFAULT 0,
+    documents_modified INT DEFAULT 0,
+    documents_deleted INT DEFAULT 0,
+    documents_staged INT DEFAULT 0,
+    chunks_processed INT DEFAULT 0,
+    operation_status ENUM('started', 'completed', 'failed', 'rolled_back', 'blocked') NOT NULL,
+    blocked_reason VARCHAR(255),
+    error_message TEXT,
+    started_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    completed_at DATETIME,
+    metadata JSON,
+    
+    INDEX idx_operation_type (operation_type),
+    INDEX idx_operation_status (operation_status),
+    INDEX idx_started_at (started_at),
+    INDEX idx_branch (dolt_branch)
+)";
+            await _doltCli.ExecuteAsync(createSyncOperationsSql);
+            _logger.LogInformation("[DoltCloneTool.CreateSyncDatabaseSchemaAsync] ✓ Created sync_operations table");
+
+            // Stage and commit the schema
+            var addSchemaResult = await _doltCli.AddAllAsync();
+            if (!addSchemaResult.Success)
+            {
+                _logger.LogWarning($"[DoltCloneTool.CreateSyncDatabaseSchemaAsync] Failed to stage schema tables: {addSchemaResult.Error}");
+            }
+            else
+            {
+                var commitSchemaResult = await _doltCli.CommitAsync("Create database schema for sync operations");
+                if (commitSchemaResult.Success)
+                {
+                    _logger.LogInformation($"[DoltCloneTool.CreateSyncDatabaseSchemaAsync] ✓ Schema committed successfully: {commitSchemaResult.CommitHash}");
+                }
+                else
+                {
+                    _logger.LogWarning($"[DoltCloneTool.CreateSyncDatabaseSchemaAsync] Failed to commit schema: {commitSchemaResult.Message}");
+                }
+            }
+
+            _logger.LogInformation("[DoltCloneTool.CreateSyncDatabaseSchemaAsync] ✓ Database schema creation completed successfully");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, $"[DoltCloneTool.CreateSyncDatabaseSchemaAsync] ❌ Failed to create database schema: {ex.Message}");
+            throw new Exception($"Failed to create database schema: {ex.Message}", ex);
+        }
+    }
+
+    /// <summary>
+    /// Initializes the sync state after schema creation for proper SyncManagerV2 integration
+    /// </summary>
+    private async Task InitializeSyncStateAsync()
+    {
+        try
+        {
+            _logger.LogInformation("[DoltCloneTool.InitializeSyncStateAsync] Initializing sync state for newly created repository");
+
+            // Get the current commit hash for tracking
+            string? currentCommit = null;
+            try
+            {
+                currentCommit = await _doltCli.GetHeadCommitHashAsync();
+                _logger.LogInformation($"[DoltCloneTool.InitializeSyncStateAsync] Current commit hash: {currentCommit}");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "[DoltCloneTool.InitializeSyncStateAsync] Could not get current commit hash, proceeding without it");
+            }
+
+            // Create a default collection entry if none exists (ensures SyncManager can track operations)
+            var initializeCollectionSql = @"
+INSERT IGNORE INTO collections (
+    collection_name,
+    display_name,
+    description,
+    embedding_model,
+    chunk_size,
+    chunk_overlap,
+    document_count,
+    metadata
+) VALUES (
+    'default',
+    'Default Collection',
+    'Default collection created during repository initialization',
+    'default',
+    512,
+    50,
+    0,
+    JSON_OBJECT('created_by', 'fallback_initialization')
+)";
+            await _doltCli.ExecuteAsync(initializeCollectionSql);
+            _logger.LogInformation("[DoltCloneTool.InitializeSyncStateAsync] ✓ Created default collection entry");
+
+            // Initialize sync state for the default collection
+            var initializeSyncStateSql = $@"
+INSERT IGNORE INTO chroma_sync_state (
+    collection_name,
+    last_sync_commit,
+    last_sync_at,
+    document_count,
+    chunk_count,
+    embedding_model,
+    sync_status,
+    local_changes_count,
+    metadata
+) VALUES (
+    'default',
+    {(currentCommit != null ? $"'{currentCommit}'" : "NULL")},
+    CURRENT_TIMESTAMP,
+    0,
+    0,
+    'default',
+    'synced',
+    0,
+    JSON_OBJECT('initialized_by', 'fallback_initialization', 'repository_type', 'empty_clone')
+)";
+            await _doltCli.ExecuteAsync(initializeSyncStateSql);
+            _logger.LogInformation("[DoltCloneTool.InitializeSyncStateAsync] ✓ Initialized sync state for default collection");
+
+            // Record the initialization operation in sync_operations
+            var recordOperationSql = $@"
+INSERT INTO sync_operations (
+    operation_type,
+    dolt_branch,
+    dolt_commit_after,
+    chroma_collections_affected,
+    documents_added,
+    documents_modified,
+    documents_deleted,
+    chunks_processed,
+    operation_status,
+    metadata
+) VALUES (
+    'init',
+    'main',
+    {(currentCommit != null ? $"'{currentCommit}'" : "NULL")},
+    '[""default""]',
+    0,
+    0,
+    0,
+    0,
+    'completed',
+    JSON_OBJECT('operation', 'fallback_initialization', 'schema_created', true, 'timestamp', NOW())
+)";
+            await _doltCli.ExecuteAsync(recordOperationSql);
+            _logger.LogInformation("[DoltCloneTool.InitializeSyncStateAsync] ✓ Recorded initialization operation in audit log");
+
+            // Stage and commit the sync state initialization
+            var addSyncStateResult = await _doltCli.AddAllAsync();
+            if (!addSyncStateResult.Success)
+            {
+                _logger.LogWarning($"[DoltCloneTool.InitializeSyncStateAsync] Failed to stage sync state initialization: {addSyncStateResult.Error}");
+            }
+            else
+            {
+                var commitSyncStateResult = await _doltCli.CommitAsync("Initialize sync state for empty repository");
+                if (commitSyncStateResult.Success)
+                {
+                    _logger.LogInformation($"[DoltCloneTool.InitializeSyncStateAsync] ✓ Sync state initialization committed successfully: {commitSyncStateResult.CommitHash}");
+                }
+                else
+                {
+                    _logger.LogWarning($"[DoltCloneTool.InitializeSyncStateAsync] Failed to commit sync state initialization: {commitSyncStateResult.Message}");
+                }
+            }
+
+            _logger.LogInformation("[DoltCloneTool.InitializeSyncStateAsync] ✓ Sync state initialization completed successfully");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, $"[DoltCloneTool.InitializeSyncStateAsync] ❌ Failed to initialize sync state: {ex.Message}");
+            throw new Exception($"Failed to initialize sync state: {ex.Message}", ex);
         }
     }
 }

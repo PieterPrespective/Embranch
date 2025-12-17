@@ -93,7 +93,7 @@ namespace DMMSTesting.IntegrationTests
 
             // Create clone tool
             var cloneLogger = loggerFactory.CreateLogger<DoltCloneTool>();
-            _cloneTool = new DoltCloneTool(cloneLogger, _targetDoltCli, _syncManager);
+            _cloneTool = new DoltCloneTool(cloneLogger, _targetDoltCli, _syncManager, targetConfig);
         }
 
         [TearDown]
@@ -308,7 +308,8 @@ namespace DMMSTesting.IntegrationTests
             var invalidCloneTool = new DoltCloneTool(
                 loggerFactory.CreateLogger<DoltCloneTool>(), 
                 invalidDoltCli, 
-                _syncManager);
+                _syncManager,
+                invalidConfig);
 
             // Act: Attempt to clone with missing executable
             _logger.LogInformation("🎯 ACT: Attempting clone with missing dolt executable");

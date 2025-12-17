@@ -199,6 +199,9 @@ namespace DMMS.Services
         {
             _logger?.LogInformation("Inserting document {DocId} into Dolt", doc.DocId);
 
+            // Ensure collection exists in Dolt database
+            await EnsureCollectionExistsInDoltAsync(collectionName);
+
             // Convert to DoltDocumentV2
             var doltDoc = DocumentConverterUtilityV2.ConvertChromaToDolt(doc);
             
@@ -632,7 +635,7 @@ namespace DMMS.Services
                     (doc_id, collection_name, content_hash, sync_direction, sync_action, synced_at)
                 VALUES 
                     ('{docId}', '{collectionName}', '{contentHash}', 
-                     '{direction.ToString().ToLower()}', '{action}', NOW())
+                     '{ConvertSyncDirectionToDbString(direction)}', '{action}', NOW())
                 ON DUPLICATE KEY UPDATE
                     content_hash = VALUES(content_hash),
                     sync_direction = VALUES(sync_direction),
@@ -655,6 +658,106 @@ namespace DMMS.Services
                 WHERE collection_name = '{collectionName}'";
 
             await _dolt.ExecuteAsync(sql);
+        }
+
+        /// <summary>
+        /// Ensures that a collection exists in the Dolt collections table before inserting documents
+        /// </summary>
+        private async Task EnsureCollectionExistsInDoltAsync(string collectionName)
+        {
+            try
+            {
+                _logger?.LogDebug("Ensuring collection '{Collection}' exists in Dolt database", collectionName);
+
+                // Use INSERT IGNORE to create collection only if it doesn't exist
+                var insertSql = $@"
+                    INSERT IGNORE INTO collections (
+                        collection_name,
+                        display_name,
+                        description,
+                        embedding_model,
+                        chunk_size,
+                        chunk_overlap,
+                        document_count,
+                        metadata
+                    ) VALUES (
+                        '{collectionName}',
+                        '{collectionName}',
+                        'Collection auto-created during sync operation',
+                        'default',
+                        512,
+                        50,
+                        0,
+                        JSON_OBJECT('created_by', 'auto_sync', 'created_at', NOW())
+                    )";
+                
+                await _dolt.ExecuteAsync(insertSql);
+                _logger?.LogDebug("Ensured collection '{Collection}' exists in Dolt database", collectionName);
+                
+                // Also ensure sync state exists for this collection
+                await EnsureSyncStateExistsAsync(collectionName);
+            }
+            catch (Exception ex)
+            {
+                _logger?.LogError(ex, "Failed to ensure collection '{Collection}' exists in Dolt database", collectionName);
+                throw new InvalidOperationException($"Failed to create collection '{collectionName}' in Dolt: {ex.Message}", ex);
+            }
+        }
+
+        /// <summary>
+        /// Ensures that sync state exists for a collection
+        /// </summary>
+        private async Task EnsureSyncStateExistsAsync(string collectionName)
+        {
+            try
+            {
+                _logger?.LogDebug("Ensuring sync state exists for collection '{Collection}'", collectionName);
+                
+                var syncStateSql = $@"
+                    INSERT IGNORE INTO chroma_sync_state (
+                        collection_name,
+                        last_sync_commit,
+                        last_sync_at,
+                        document_count,
+                        chunk_count,
+                        embedding_model,
+                        sync_status,
+                        local_changes_count,
+                        metadata
+                    ) VALUES (
+                        '{collectionName}',
+                        NULL,
+                        NOW(),
+                        0,
+                        0,
+                        'default',
+                        'pending',
+                        0,
+                        JSON_OBJECT('created_by', 'auto_sync', 'created_at', NOW())
+                    )";
+                
+                await _dolt.ExecuteAsync(syncStateSql);
+                _logger?.LogDebug("Successfully ensured sync state for collection '{Collection}'", collectionName);
+            }
+            catch (Exception ex)
+            {
+                _logger?.LogWarning(ex, "Failed to ensure sync state for collection '{Collection}': {Error}", collectionName, ex.Message);
+                // Don't throw here as this is not critical for document insertion
+            }
+        }
+
+        /// <summary>
+        /// Converts SyncDirection enum to database string format
+        /// </summary>
+        private static string ConvertSyncDirectionToDbString(SyncDirection direction)
+        {
+            return direction switch
+            {
+                SyncDirection.DoltToChroma => "dolt_to_chroma",
+                SyncDirection.ChromaToDolt => "chroma_to_dolt", 
+                SyncDirection.Bidirectional => "bidirectional",
+                _ => throw new ArgumentOutOfRangeException(nameof(direction), direction, "Unknown sync direction")
+            };
         }
 
         #endregion
