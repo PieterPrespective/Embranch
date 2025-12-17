@@ -164,6 +164,7 @@ namespace DMMS.Services
         // Additional context
         public LocalChanges? LocalChanges { get; set; }           // NEW: Local changes detected
         public SyncDirection Direction { get; set; }              // NEW: Direction of sync
+        public object? Data { get; set; }                         // NEW: Additional operation-specific data
         
         public bool Success => Status == SyncStatusV2.Completed || Status == SyncStatusV2.NoChanges;
         public int TotalChanges => Added + Modified + Deleted;

@@ -328,6 +328,45 @@ namespace DMMS.Services
         }
 
         /// <summary>
+        /// Get all available collection names from the Dolt database
+        /// </summary>
+        /// <returns>List of collection names that exist in the documents table</returns>
+        public async Task<List<string>> GetAvailableCollectionNamesAsync()
+        {
+            _logger?.LogDebug("Getting available collection names from Dolt database");
+
+            var sql = @"
+                SELECT DISTINCT collection_name
+                FROM documents
+                WHERE collection_name IS NOT NULL AND collection_name != ''
+                ORDER BY collection_name";
+
+            try
+            {
+                var results = await _dolt.QueryAsync<dynamic>(sql);
+                var collections = new List<string>();
+
+                foreach (var row in results)
+                {
+                    if (row?.collection_name != null)
+                    {
+                        collections.Add(row.collection_name.ToString());
+                    }
+                }
+
+                _logger?.LogDebug("Found {Count} collections in Dolt database: {Collections}", 
+                    collections.Count, string.Join(", ", collections));
+
+                return collections;
+            }
+            catch (Exception ex)
+            {
+                _logger?.LogWarning(ex, "Failed to get collection names from Dolt, likely empty repository");
+                return new List<string>();
+            }
+        }
+
+        /// <summary>
         /// Get sync state for a collection
         /// </summary>
         public async Task<ChromaSyncStateV2?> GetSyncStateAsync(string collectionName)

@@ -525,11 +525,23 @@ namespace DMMS.Services
             return remotes.Select(kvp => new RemoteInfo(kvp.Key, kvp.Value));
         }
 
-        public async Task<DoltCommandResult> PushAsync(string remote = "origin", string? branch = null)
+        public async Task<PushResult> PushAsync(string remote = "origin", string? branch = null)
         {
-            return branch != null
+            var commandResult = branch != null
                 ? await ExecuteDoltCommandAsync("push", remote, branch)
                 : await ExecuteDoltCommandAsync("push", remote);
+
+            // Analyze the push output to create structured result
+            var pushResult = PushResultAnalyzer.AnalyzePushOutput(commandResult, _logger);
+
+            // Calculate commit count if we have a commit range
+            if (pushResult.CommitsPushed == -1 && pushResult.FromCommitHash != null && pushResult.ToCommitHash != null)
+            {
+                var commitCount = await PushResultAnalyzer.CalculateCommitCount(this, pushResult.FromCommitHash, pushResult.ToCommitHash);
+                pushResult = pushResult with { CommitsPushed = commitCount };
+            }
+
+            return pushResult;
         }
 
         /// <summary>
@@ -778,6 +790,16 @@ namespace DMMS.Services
             }
 
             return default(T)!;
+        }
+
+        /// <summary>
+        /// Execute a raw Dolt command with arbitrary arguments
+        /// </summary>
+        /// <param name="args">The command arguments to pass to dolt</param>
+        /// <returns>Raw command result from Dolt</returns>
+        public async Task<DoltCommandResult> ExecuteRawCommandAsync(params string[] args)
+        {
+            return await ExecuteDoltCommandAsync(args);
         }
     }
 }

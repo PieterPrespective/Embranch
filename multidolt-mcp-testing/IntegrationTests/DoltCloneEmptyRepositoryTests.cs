@@ -346,5 +346,219 @@ namespace DMMSTesting.IntegrationTests
             _logger.LogInformation("✅ Proper error handling validated - Error: {Error}, Message: {Message}", errorCode, message);
             _logger.LogInformation("🎉 TEST PASSED: DoltCloneTool correctly identifies missing dolt executable with proper error message");
         }
+
+        /// <summary>
+        /// Tests that invalid remote URLs are detected early during the fallback scenario and provide helpful suggestions.
+        /// This addresses the PP13-46 requirement for early URL validation to prevent wasted processing time.
+        /// </summary>
+        [Test]
+        public async Task DoltClone_InvalidRemoteUrl_ShouldFailEarlyWithSuggestion()
+        {
+            // Initialize PythonContext if needed
+            if (!PythonContext.IsInitialized)
+            {
+                _logger.LogInformation("Initializing PythonContext for invalid remote URL test...");
+                PythonContext.Initialize();
+                _logger.LogInformation("✅ PythonContext initialized successfully");
+            }
+
+            // Arrange: Use an invalid DoltHub URL format that should trigger early validation
+            _logger.LogInformation("🔧 ARRANGE: Testing early validation with invalid DoltHub URL");
+            
+            string invalidUrl = "https://www.dolthub.com/repositories/nonexistent-user/nonexistent-repo";
+            _logger.LogInformation("📋 Using invalid URL: {Url}", invalidUrl);
+
+            // Act: Attempt to clone with invalid URL - should fail during fallback remote validation
+            _logger.LogInformation("🎯 ACT: Attempting clone with invalid DoltHub URL");
+            
+            var cloneResult = await _cloneTool.DoltClone(invalidUrl);
+
+            // Assert: Should fail early with specific validation error
+            _logger.LogInformation("✅ ASSERT: Validating early URL validation and helpful error response");
+            
+            var resultJson = JsonSerializer.Serialize(cloneResult, new JsonSerializerOptions { WriteIndented = true });
+            _logger.LogInformation("📄 Invalid URL result: {Result}", resultJson);
+
+            using var doc = JsonDocument.Parse(resultJson);
+            var root = doc.RootElement;
+
+            // Should fail with specific validation error
+            Assert.That(root.TryGetProperty("success", out var successElement), Is.True, "Result should have 'success' property");
+            Assert.That(successElement.GetBoolean(), Is.False, "Clone should fail for invalid remote URL");
+
+            Assert.That(root.TryGetProperty("error", out var errorElement), Is.True, "Failed result should have 'error' property");
+            var errorCode = errorElement.GetString();
+            
+            // Should be INVALID_REMOTE_URL (early validation) not CLONE_FAILED (late validation)
+            Assert.That(errorCode, Is.EqualTo("INVALID_REMOTE_URL"), 
+                "Should return early validation error, not generic clone failure");
+
+            Assert.That(root.TryGetProperty("message", out var messageElement), Is.True, "Failed result should have 'message' property");
+            var message = messageElement.GetString();
+            Assert.That(message, Is.Not.Null.And.Not.Empty, "Error message should not be empty");
+            Assert.That(message.ToLowerInvariant(), Does.Contain("invalid remote url"), "Message should indicate URL is invalid");
+
+            // Verify suggestion is provided for DoltHub URL format
+            Assert.That(root.TryGetProperty("suggestion", out var suggestionElement), Is.True, "Result should have 'suggestion' property for DoltHub URLs");
+            var suggestion = suggestionElement.GetString();
+            Assert.That(suggestion, Is.Not.Null.And.Not.Empty, "Suggestion should not be empty");
+            Assert.That(suggestion, Does.Contain("doltremoteapi.dolthub.com"), "Suggestion should include correct DoltHub API URL format");
+            Assert.That(suggestion, Does.Contain("nonexistent-user/nonexistent-repo"), "Suggestion should include extracted username/repo");
+
+            // Verify attempted URL is preserved
+            Assert.That(root.TryGetProperty("attempted_url", out var attemptedUrlElement), Is.True, "Result should have 'attempted_url' property");
+            var attemptedUrl = attemptedUrlElement.GetString();
+            Assert.That(attemptedUrl, Does.StartWith("https://doltremoteapi.dolthub.com"), "URL should be converted to correct DoltHub format");
+
+            _logger.LogInformation("✅ Early validation successful - Error: {Error}, Suggestion: {Suggestion}", errorCode, suggestion);
+            _logger.LogInformation("🎉 TEST PASSED: DoltCloneTool detects invalid URLs early with helpful suggestions");
+        }
+
+        /// <summary>
+        /// Tests that valid username/database format conversion works correctly.
+        /// This validates the existing functionality mentioned in PP13-46 lines 91-96.
+        /// </summary>
+        [Test]
+        public async Task DoltClone_UsernameRepoFormat_ShouldConvertCorrectly()
+        {
+            // Initialize PythonContext if needed
+            if (!PythonContext.IsInitialized)
+            {
+                _logger.LogInformation("Initializing PythonContext for username/repo format test...");
+                PythonContext.Initialize();
+                _logger.LogInformation("✅ PythonContext initialized successfully");
+            }
+
+            // Arrange: Use shorthand username/repo format that should be converted
+            _logger.LogInformation("🔧 ARRANGE: Testing username/database format conversion");
+            
+            string shorthandFormat = "test-user/test-database";
+            _logger.LogInformation("📋 Using shorthand format: {Format}", shorthandFormat);
+
+            // Act: Attempt clone with shorthand format
+            _logger.LogInformation("🎯 ACT: Attempting clone with shorthand username/database format");
+            
+            var cloneResult = await _cloneTool.DoltClone(shorthandFormat);
+
+            // Assert: Should properly convert URL format and attempt validation
+            _logger.LogInformation("✅ ASSERT: Validating URL format conversion");
+            
+            var resultJson = JsonSerializer.Serialize(cloneResult, new JsonSerializerOptions { WriteIndented = true });
+            _logger.LogInformation("📄 Shorthand format result: {Result}", resultJson);
+
+            using var doc = JsonDocument.Parse(resultJson);
+            var root = doc.RootElement;
+
+            // Should fail (since test-user/test-database likely doesn't exist) but with converted URL
+            Assert.That(root.TryGetProperty("success", out var successElement), Is.True, "Result should have 'success' property");
+            Assert.That(successElement.GetBoolean(), Is.False, "Clone should fail for non-existent test repository");
+
+            Assert.That(root.TryGetProperty("attempted_url", out var attemptedUrlElement), Is.True, "Result should have 'attempted_url' property");
+            var attemptedUrl = attemptedUrlElement.GetString();
+            
+            // Verify URL was converted correctly
+            Assert.That(attemptedUrl, Is.EqualTo("https://doltremoteapi.dolthub.com/test-user/test-database"), 
+                "Shorthand format should be converted to correct DoltHub API URL");
+
+            // Error should be about invalid remote, not format conversion
+            Assert.That(root.TryGetProperty("error", out var errorElement), Is.True, "Failed result should have 'error' property");
+            var errorCode = errorElement.GetString();
+            Assert.That(errorCode, Is.EqualTo("INVALID_REMOTE_URL").Or.EqualTo("REMOTE_NOT_FOUND"), 
+                "Should fail due to remote validation, not format issues");
+
+            _logger.LogInformation("✅ URL conversion validated - Converted to: {Url}, Error: {Error}", attemptedUrl, errorCode);
+            _logger.LogInformation("🎉 TEST PASSED: DoltCloneTool correctly converts username/database format");
+        }
+
+        /// <summary>
+        /// Tests that valid remote URLs pass validation and proceed to normal clone workflow.
+        /// This ensures the new validation doesn't break existing valid operations.
+        /// </summary>
+        [Test]
+        public async Task DoltClone_ValidRemoteUrl_ShouldProceedNormally()
+        {
+            // Initialize PythonContext if needed
+            if (!PythonContext.IsInitialized)
+            {
+                _logger.LogInformation("Initializing PythonContext for valid remote URL test...");
+                PythonContext.Initialize();
+                _logger.LogInformation("✅ PythonContext initialized successfully");
+            }
+
+            // Arrange: Create a valid local repository to use as remote
+            _logger.LogInformation("🔧 ARRANGE: Creating valid local repository for remote URL validation test");
+            
+            var validRemotePath = Path.Combine(_testDirectory, "valid_remote");
+            Directory.CreateDirectory(validRemotePath);
+            
+            var remoteConfig = Options.Create(new DoltConfiguration
+            {
+                DoltExecutablePath = Environment.OSVersion.Platform == PlatformID.Win32NT 
+                    ? @"C:\Program Files\Dolt\bin\dolt.exe" 
+                    : "dolt",
+                RepositoryPath = validRemotePath,
+                CommandTimeoutMs = 30000,
+                EnableDebugLogging = true
+            });
+            
+            var loggerFactory = LoggerFactory.Create(builder => builder.AddConsole().SetMinimumLevel(LogLevel.Debug));
+            var remoteDoltCli = new DoltCli(remoteConfig, loggerFactory.CreateLogger<DoltCli>());
+            
+            // Initialize and create initial commit in remote
+            var remoteInitResult = await remoteDoltCli.InitAsync();
+            Assert.That(remoteInitResult.Success, Is.True, $"Failed to initialize remote repository: {remoteInitResult.Error}");
+            
+            // Create a simple table and commit to make it a valid clone source
+            await remoteDoltCli.ExecuteAsync("CREATE TABLE test_table (id INT PRIMARY KEY, name VARCHAR(100))");
+            await remoteDoltCli.ExecuteAsync("INSERT INTO test_table VALUES (1, 'test')");
+            var addResult = await remoteDoltCli.AddAllAsync();
+            Assert.That(addResult.Success, Is.True, "Failed to add changes to remote");
+            
+            var commitResult = await remoteDoltCli.CommitAsync("Initial test commit");
+            Assert.That(commitResult.Success, Is.True, "Failed to create initial commit in remote");
+            
+            _logger.LogInformation("✅ Valid remote repository created with test data");
+
+            // Act: Attempt clone with valid local file URL
+            _logger.LogInformation("🎯 ACT: Attempting clone with valid file:// URL");
+            
+            var cloneResult = await _cloneTool.DoltClone(validRemotePath);
+
+            // Assert: Should succeed or gracefully handle valid repository
+            _logger.LogInformation("✅ ASSERT: Validating successful handling of valid remote URL");
+            
+            var resultJson = JsonSerializer.Serialize(cloneResult, new JsonSerializerOptions { WriteIndented = true });
+            _logger.LogInformation("📄 Valid remote URL result: {Result}", resultJson);
+
+            using var doc = JsonDocument.Parse(resultJson);
+            var root = doc.RootElement;
+
+            Assert.That(root.TryGetProperty("success", out var successElement), Is.True, "Result should have 'success' property");
+            var success = successElement.GetBoolean();
+            
+            if (success)
+            {
+                // If successful, verify it proceeded through normal clone workflow
+                Assert.That(root.TryGetProperty("repository", out var repositoryElement), Is.True, "Successful result should have 'repository' property");
+                Assert.That(root.TryGetProperty("checkout", out var checkoutElement), Is.True, "Successful result should have 'checkout' property");
+                
+                _logger.LogInformation("✅ Clone succeeded with valid repository - proceeding through normal workflow");
+            }
+            else
+            {
+                // If failed, should not be due to URL validation but other factors
+                Assert.That(root.TryGetProperty("error", out var errorElement), Is.True, "Failed result should have 'error' property");
+                var errorCode = errorElement.GetString();
+                
+                // Should NOT be INVALID_REMOTE_URL since we have a valid repository
+                Assert.That(errorCode, Is.Not.EqualTo("INVALID_REMOTE_URL"), 
+                    "Valid repository should not fail URL validation");
+                
+                _logger.LogInformation("ℹ️ Clone failed for non-URL-validation reasons - Error: {Error}", errorCode);
+                _logger.LogInformation("✅ This is acceptable - validation passed but clone failed for other reasons");
+            }
+
+            _logger.LogInformation("🎉 TEST PASSED: DoltCloneTool validation doesn't break valid repository operations");
+        }
     }
 }

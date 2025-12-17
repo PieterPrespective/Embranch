@@ -150,8 +150,8 @@ namespace DMMS.Services
         /// </summary>
         /// <param name="remote">Name of the remote to push to (default: "origin")</param>
         /// <param name="branch">Specific branch to push. If null, pushes current branch</param>
-        /// <returns>Command result indicating success/failure of the push operation</returns>
-        Task<DoltCommandResult> PushAsync(string remote = "origin", string? branch = null);
+        /// <returns>Structured push result with detailed information about the push operation</returns>
+        Task<PushResult> PushAsync(string remote = "origin", string? branch = null);
         
         /// <summary>
         /// Pull changes from a remote repository and merge into current branch
@@ -263,5 +263,12 @@ namespace DMMS.Services
         /// <param name="sql">The SQL query to execute (should return a single value)</param>
         /// <returns>The scalar result of the query</returns>
         Task<T> ExecuteScalarAsync<T>(string sql);
+        
+        /// <summary>
+        /// Execute a raw Dolt command with arbitrary arguments
+        /// </summary>
+        /// <param name="args">The command arguments to pass to dolt</param>
+        /// <returns>Raw command result from Dolt</returns>
+        Task<DoltCommandResult> ExecuteRawCommandAsync(params string[] args);
     }
 }

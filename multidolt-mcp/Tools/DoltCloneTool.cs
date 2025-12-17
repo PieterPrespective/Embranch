@@ -17,6 +17,7 @@ public class DoltCloneTool
     private readonly IDoltCli _doltCli;
     private readonly ISyncManagerV2 _syncManager;
     private readonly string _repositoryPath;
+    private readonly DoltConfiguration _doltConfig;
 
     /// <summary>
     /// Initializes a new instance of the DoltCloneTool class
@@ -27,6 +28,7 @@ public class DoltCloneTool
         _doltCli = doltCli;
         _syncManager = syncManager;
         _repositoryPath = config.Value.RepositoryPath;
+        _doltConfig = config.Value;
     }
 
     /// <summary>
@@ -94,6 +96,102 @@ public class DoltCloneTool
                     formattedUrl = $"https://doltremoteapi.dolthub.com/{remote_url}";
                     _logger.LogInformation($"[DoltCloneTool.DoltClone] Formatted DoltHub repo '{remote_url}' to '{formattedUrl}'");
                 }
+            }
+
+            // Pre-clone URL validation to detect invalid URLs early
+            _logger.LogInformation($"[DoltCloneTool.DoltClone] Performing pre-clone URL validation for: '{formattedUrl}'");
+            
+            // For DoltHub URLs, perform early validation by testing remote connectivity
+            if (formattedUrl.Contains("doltremoteapi.dolthub.com") || formattedUrl.Contains("dolthub.com"))
+            {
+                try
+                {
+                    // Create a temporary repository to test remote validity
+                    var tempTestDir = Path.Combine(Path.GetTempPath(), $"dolt_url_test_{Guid.NewGuid():N}");
+                    Directory.CreateDirectory(tempTestDir);
+                    
+                    try
+                    {
+                        var tempConfig = Options.Create(new DoltConfiguration
+                        {
+                            DoltExecutablePath = _doltConfig.DoltExecutablePath,
+                            RepositoryPath = tempTestDir,
+                            CommandTimeoutMs = 15000, // Shorter timeout for validation
+                            EnableDebugLogging = false
+                        });
+                        
+                        using var tempLoggerFactory = Microsoft.Extensions.Logging.LoggerFactory.Create(builder => builder.SetMinimumLevel(LogLevel.Warning));
+                        var tempDoltCli = new DoltCli(tempConfig, tempLoggerFactory.CreateLogger<DoltCli>());
+                        
+                        // Initialize temporary repository
+                        var tempInitResult = await tempDoltCli.InitAsync();
+                        if (tempInitResult.Success)
+                        {
+                            // Test remote validity by trying to add it
+                            var tempRemoteResult = await tempDoltCli.AddRemoteAsync("test_origin", formattedUrl);
+                            
+                            if (!tempRemoteResult.Success && tempRemoteResult.Error != null)
+                            {
+                                // Check for invalid remote URL patterns
+                                bool isInvalidUrlError = tempRemoteResult.Error.Contains("do not exist", StringComparison.OrdinalIgnoreCase) ||
+                                                       tempRemoteResult.Error.Contains("Invalid repository ID", StringComparison.OrdinalIgnoreCase) ||
+                                                       tempRemoteResult.Error.Contains("repository not found", StringComparison.OrdinalIgnoreCase) ||
+                                                       tempRemoteResult.Error.Contains("authentication failed", StringComparison.OrdinalIgnoreCase) ||
+                                                       tempRemoteResult.Error.Contains("invalid remote", StringComparison.OrdinalIgnoreCase) ||
+                                                       tempRemoteResult.Error.Contains("could not connect", StringComparison.OrdinalIgnoreCase);
+                                
+                                if (isInvalidUrlError)
+                                {
+                                    _logger.LogError($"[DoltCloneTool.DoltClone] ❌ Pre-clone validation failed - invalid remote URL: {tempRemoteResult.Error}");
+                                    
+                                    // Return immediate error without attempting clone
+                                    return new
+                                    {
+                                        success = false,
+                                        error = "INVALID_REMOTE_URL",
+                                        message = $"Invalid remote URL detected during pre-clone validation: '{formattedUrl}'. {tempRemoteResult.Error}",
+                                        attempted_url = formattedUrl,
+                                        validation_error = tempRemoteResult.Error,
+                                        suggestion = formattedUrl.Contains("www.dolthub.com/repositories/") ? 
+                                            $"Try using the correct DoltHub URL format: 'https://doltremoteapi.dolthub.com/{ExtractUsernameAndRepo(formattedUrl)}' or shorthand '{ExtractUsernameAndRepo(formattedUrl)}'" :
+                                            "Please verify the remote URL format and ensure the repository exists and is accessible."
+                                    };
+                                }
+                            }
+                            
+                            _logger.LogInformation($"[DoltCloneTool.DoltClone] ✓ Pre-clone validation passed for URL: '{formattedUrl}'");
+                        }
+                        else
+                        {
+                            _logger.LogWarning($"[DoltCloneTool.DoltClone] Could not initialize temporary repository for URL validation: {tempInitResult.Error}");
+                            // Continue with clone attempt even if validation setup fails
+                        }
+                    }
+                    finally
+                    {
+                        // Clean up temporary directory
+                        try
+                        {
+                            if (Directory.Exists(tempTestDir))
+                            {
+                                Directory.Delete(tempTestDir, true);
+                            }
+                        }
+                        catch (Exception cleanupEx)
+                        {
+                            _logger.LogWarning(cleanupEx, $"[DoltCloneTool.DoltClone] Failed to clean up validation temp directory: {cleanupEx.Message}");
+                        }
+                    }
+                }
+                catch (Exception validationEx)
+                {
+                    _logger.LogWarning(validationEx, $"[DoltCloneTool.DoltClone] Pre-clone validation encountered an error: {validationEx.Message}");
+                    // Continue with clone attempt even if validation fails due to technical issues
+                }
+            }
+            else
+            {
+                _logger.LogInformation($"[DoltCloneTool.DoltClone] Skipping pre-clone validation for non-DoltHub URL: '{formattedUrl}'");
             }
 
             // Clone the repository and check for success
@@ -183,12 +281,57 @@ public class DoltCloneTool
                             _logger.LogInformation($"[DoltCloneTool.DoltClone] ✓ Repository already partially initialized (from failed clone), proceeding with remote setup");
                         }
                         
-                        // Add the remote manually (similar to DoltInitTool)
-                        fallbackStep = "adding remote origin";
+                        // Add the remote manually and validate URL connectivity
+                        fallbackStep = "validating remote URL";
                         _logger.LogInformation($"[DoltCloneTool.DoltClone] Fallback step: {fallbackStep} with URL: '{formattedUrl}'");
                         
                         var remoteResult = await _doltCli.AddRemoteAsync("origin", formattedUrl);
                         _logger.LogInformation($"[DoltCloneTool.DoltClone] Add remote result - Success: {remoteResult.Success}, Error: '{remoteResult.Error}', Output: '{remoteResult.Output}'");
+                        
+                        // Enhanced remote validation: check for invalid URL errors
+                        if (!remoteResult.Success && remoteResult.Error != null)
+                        {
+                            // Check for invalid remote URL patterns
+                            bool isInvalidUrlError = remoteResult.Error.Contains("do not exist", StringComparison.OrdinalIgnoreCase) ||
+                                                   remoteResult.Error.Contains("Invalid repository ID", StringComparison.OrdinalIgnoreCase) ||
+                                                   remoteResult.Error.Contains("repository not found", StringComparison.OrdinalIgnoreCase) ||
+                                                   remoteResult.Error.Contains("authentication failed", StringComparison.OrdinalIgnoreCase) ||
+                                                   remoteResult.Error.Contains("invalid remote", StringComparison.OrdinalIgnoreCase) ||
+                                                   remoteResult.Error.Contains("could not connect", StringComparison.OrdinalIgnoreCase);
+                            
+                            if (isInvalidUrlError)
+                            {
+                                _logger.LogError($"[DoltCloneTool.DoltClone] ❌ Invalid remote URL detected early: {remoteResult.Error}");
+                                
+                                // Clean up the partially initialized repository
+                                try
+                                {
+                                    var invalidRemoteDoltDir = Path.Combine(_repositoryPath, ".dolt");
+                                    if (Directory.Exists(invalidRemoteDoltDir))
+                                    {
+                                        Directory.Delete(invalidRemoteDoltDir, true);
+                                        _logger.LogInformation($"[DoltCloneTool.DoltClone] ✓ Cleaned up invalid remote setup");
+                                    }
+                                }
+                                catch (Exception cleanupEx)
+                                {
+                                    _logger.LogWarning(cleanupEx, $"[DoltCloneTool.DoltClone] Failed to clean up after invalid remote detection: {cleanupEx.Message}");
+                                }
+                                
+                                // Return immediate error without proceeding to clone
+                                return new
+                                {
+                                    success = false,
+                                    error = "INVALID_REMOTE_URL",
+                                    message = $"Invalid remote URL: '{formattedUrl}'. {remoteResult.Error}",
+                                    attempted_url = formattedUrl,
+                                    validation_error = remoteResult.Error,
+                                    suggestion = formattedUrl.Contains("www.dolthub.com/repositories/") ? 
+                                        $"Try using the correct DoltHub URL format: 'https://doltremoteapi.dolthub.com/{ExtractUsernameAndRepo(formattedUrl)}' or shorthand '{ExtractUsernameAndRepo(formattedUrl)}'" :
+                                        "Please verify the remote URL format and ensure the repository exists and is accessible."
+                                };
+                            }
+                        }
                         
                         if (remoteResult.Success)
                         {
@@ -455,19 +598,56 @@ public class DoltCloneTool
             // Sync to ChromaDB
             int documentsLoaded = 0;
             List<string> collectionsCreated = new();
+            bool syncSucceeded = false;
+            string? syncError = null;
             
             try
             {
                 // Perform full sync from Dolt to ChromaDB
-                await _syncManager.FullSyncAsync();
+                var syncResult = await _syncManager.FullSyncAsync();
                 
-                // TODO: Get actual counts from sync result
-                documentsLoaded = 0; // Would need to be returned from FullSyncAsync
-                collectionsCreated.Add(currentBranch ?? "main");
+                if (syncResult.Status == SyncStatusV2.Completed)
+                {
+                    syncSucceeded = true;
+                    documentsLoaded = syncResult.Added + syncResult.Modified;
+                    
+                    // Try to discover actual collection names that were created
+                    try
+                    {
+                        var doltCollections = await _doltCli.QueryAsync<dynamic>("SELECT DISTINCT collection_name FROM documents WHERE collection_name IS NOT NULL AND collection_name != ''");
+                        foreach (var row in doltCollections)
+                        {
+                            if (row?.collection_name != null)
+                            {
+                                collectionsCreated.Add(row.collection_name.ToString());
+                            }
+                        }
+                        
+                        // If no collections found, use the branch name as fallback
+                        if (!collectionsCreated.Any())
+                        {
+                            collectionsCreated.Add(currentBranch ?? "main");
+                        }
+                    }
+                    catch
+                    {
+                        // Fallback to branch name if unable to query
+                        collectionsCreated.Add(currentBranch ?? "main");
+                    }
+                    
+                    _logger.LogInformation("Successfully synced {DocumentCount} documents to ChromaDB in {CollectionCount} collections", 
+                        documentsLoaded, collectionsCreated.Count);
+                }
+                else
+                {
+                    syncError = syncResult.ErrorMessage ?? "Sync failed with unknown error";
+                    _logger.LogError("Failed to sync to ChromaDB after clone: {Error}", syncError);
+                }
             }
             catch (Exception ex)
             {
-                _logger.LogWarning(ex, "Failed to sync to ChromaDB after clone");
+                syncError = ex.Message;
+                _logger.LogError(ex, "Failed to sync to ChromaDB after clone");
             }
 
             return new
@@ -490,14 +670,18 @@ public class DoltCloneTool
                 },
                 sync_summary = new
                 {
+                    sync_succeeded = syncSucceeded,
                     documents_loaded = documentsLoaded,
-                    collections_created = collectionsCreated.ToArray()
+                    collections_created = collectionsCreated.ToArray(),
+                    sync_error = syncError
                 },
                 message = !isCloneSuccessful 
                     ? $"Repository was empty at '{formattedUrl}'. Initialized local repository with initial commits and configured remote 'origin'. Repository is now ready for use."
                     : currentCommit is null 
                         ? $"Successfully cloned empty repository from '{formattedUrl}'. Repository has no commits yet."
-                        : $"Successfully cloned repository from '{formattedUrl}' and synced {documentsLoaded} documents to ChromaDB"
+                        : syncSucceeded
+                            ? $"Successfully cloned repository from '{formattedUrl}' and synced {documentsLoaded} documents to ChromaDB"
+                            : $"Successfully cloned repository from '{formattedUrl}' but failed to sync to ChromaDB: {syncError}. Documents can be manually synced later."
             };
         }
         catch (Exception ex)
@@ -689,6 +873,47 @@ CREATE TABLE IF NOT EXISTS sync_operations (
         {
             _logger.LogError(ex, $"[DoltCloneTool.CreateSyncDatabaseSchemaAsync] ❌ Failed to create database schema: {ex.Message}");
             throw new Exception($"Failed to create database schema: {ex.Message}", ex);
+        }
+    }
+
+    /// <summary>
+    /// Extracts username/repository from DoltHub URLs for suggestion purposes
+    /// </summary>
+    /// <param name="url">The DoltHub URL to parse</param>
+    /// <returns>Username/repository format if extractable, otherwise the original URL</returns>
+    private string ExtractUsernameAndRepo(string url)
+    {
+        try
+        {
+            // Handle various DoltHub URL formats
+            if (url.Contains("www.dolthub.com/repositories/"))
+            {
+                // Format: https://www.dolthub.com/repositories/username/database-name
+                var parts = url.Split('/');
+                if (parts.Length >= 6)
+                {
+                    var username = parts[4];
+                    var repoName = parts[5];
+                    return $"{username}/{repoName}";
+                }
+            }
+            else if (url.Contains("www.dolthub.com/") && !url.Contains("/repositories/"))
+            {
+                // Format: https://www.dolthub.com/username/database-name
+                var parts = url.Split('/');
+                if (parts.Length >= 5)
+                {
+                    var username = parts[3];
+                    var repoName = parts[4];
+                    return $"{username}/{repoName}";
+                }
+            }
+            
+            return url; // Return original if parsing fails
+        }
+        catch
+        {
+            return url; // Return original if any parsing error occurs
         }
     }
 

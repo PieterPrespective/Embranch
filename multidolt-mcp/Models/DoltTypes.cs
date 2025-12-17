@@ -22,6 +22,22 @@ namespace DMMS.Models
     /// </summary>
     public record MergeResult(bool Success, bool HasConflicts, string? MergeCommitHash, string Message);
 
+    /// <summary>
+    /// Result from pushing changes to remote repository
+    /// </summary>
+    public record PushResult(
+        bool Success, 
+        string Message, 
+        int CommitsPushed, 
+        string? FromCommitHash, 
+        string? ToCommitHash, 
+        bool IsUpToDate, 
+        bool IsNewBranch, 
+        bool IsRejected,
+        string? ErrorType,
+        string? RemoteUrl
+    );
+
     // ==================== Information Types ====================
 
     /// <summary>

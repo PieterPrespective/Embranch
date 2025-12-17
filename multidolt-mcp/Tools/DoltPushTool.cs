@@ -100,29 +100,63 @@ public class DoltPushTool
             bool hasUncommittedChanges = localChanges?.HasChanges ?? false;
 
             // Perform the push using sync manager
-            var pushResult = await _syncManager.ProcessPushAsync(remote, branch);
+            var syncResult = await _syncManager.ProcessPushAsync(remote, branch);
 
-            if (!pushResult.Success)
+            if (!syncResult.Success)
             {
-                string errorCode = "OPERATION_FAILED";
-                if (pushResult.ErrorMessage?.Contains("rejected", StringComparison.OrdinalIgnoreCase) ?? false)
-                    errorCode = "REMOTE_REJECTED";
-                else if (pushResult.ErrorMessage?.Contains("authentication", StringComparison.OrdinalIgnoreCase) ?? false)
-                    errorCode = "AUTHENTICATION_FAILED";
+                // Extract detailed error information from sync result
+                var detailedPushResult = syncResult.Data as Models.PushResult;
+                string errorCode = detailedPushResult?.ErrorType ?? "OPERATION_FAILED";
+                
+                // Fallback error classification if detailed result unavailable
+                if (detailedPushResult == null)
+                {
+                    if (syncResult.ErrorMessage?.Contains("rejected", StringComparison.OrdinalIgnoreCase) ?? false)
+                        errorCode = "REMOTE_REJECTED";
+                    else if (syncResult.ErrorMessage?.Contains("authentication", StringComparison.OrdinalIgnoreCase) ?? false)
+                        errorCode = "AUTHENTICATION_FAILED";
+                }
                 
                 return new
                 {
                     success = false,
                     error = errorCode,
-                    message = pushResult.ErrorMessage ?? "Push failed",
+                    message = syncResult.ErrorMessage ?? "Push failed",
                     suggestions = errorCode == "REMOTE_REJECTED" 
                         ? new[] { "Pull first to get remote changes", "Use force=true to override (dangerous)" }
                         : null
                 };
             }
 
-            // TODO: Calculate actual commits pushed
-            int commitsPushed = 0;
+            // Extract detailed push result information
+            var pushResult = syncResult.Data as Models.PushResult;
+            
+            // Calculate actual commits pushed
+            int commitsPushed = pushResult?.CommitsPushed ?? 0;
+            
+            // Get actual remote commit hash after successful push
+            string remoteCommitHash;
+            try 
+            {
+                // For successful pushes, the remote should now match our local HEAD
+                remoteCommitHash = pushResult?.ToCommitHash ?? await _doltCli.GetHeadCommitHashAsync();
+            }
+            catch 
+            {
+                // Fallback to local commit if remote query fails
+                remoteCommitHash = localCommit ?? "";
+            }
+            
+            // Create appropriate status message
+            string statusMessage;
+            if (pushResult?.IsUpToDate == true)
+                statusMessage = "Already up to date.";
+            else if (pushResult?.IsNewBranch == true)
+                statusMessage = $"Created new branch {branch} with {commitsPushed} commits.";
+            else if (commitsPushed > 0)
+                statusMessage = $"Pushed {commitsPushed} commits to {remote}/{branch}.";
+            else
+                statusMessage = "Push completed successfully.";
 
             return new
             {
@@ -132,17 +166,18 @@ public class DoltPushTool
                     remote = remote,
                     branch = branch,
                     commits_pushed = commitsPushed,
-                    from_commit = localCommit ?? "",
-                    to_url = targetRemote.Url
+                    from_commit = pushResult?.FromCommitHash ?? localCommit ?? "",
+                    to_commit = pushResult?.ToCommitHash ?? remoteCommitHash,
+                    to_url = pushResult?.RemoteUrl ?? targetRemote.Url,
+                    is_new_branch = pushResult?.IsNewBranch ?? false,
+                    is_up_to_date = pushResult?.IsUpToDate ?? false
                 },
                 remote_state = new
                 {
                     remote_branch = $"{remote}/{branch}",
-                    remote_commit = localCommit ?? ""
+                    remote_commit = remoteCommitHash
                 },
-                message = commitsPushed > 0 
-                    ? $"Pushed {commitsPushed} commits to {remote}/{branch}."
-                    : "Already up to date.",
+                message = statusMessage,
                 warning = hasUncommittedChanges 
                     ? $"Note: You have uncommitted changes that were not pushed."
                     : null

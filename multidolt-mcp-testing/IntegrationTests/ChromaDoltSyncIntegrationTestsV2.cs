@@ -1,4 +1,5 @@
 using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -92,6 +93,137 @@ namespace DMMSTesting.IntegrationTests
                 _logger!.LogError(ex, "❌ Multi-user workflow failed");
                 throw;
             }
+        }
+
+        [Test]
+        [CancelAfter(60000)] // 1 minute timeout for this specific test
+        public async Task FullSync_WithNonExistentCollection_ShouldHandleGracefully()
+        {
+            // Initialize PythonContext for ChromaDB operations
+            if (!PythonContext.IsInitialized)
+            {
+                _logger!.LogInformation("Initializing PythonContext for ChromaDB operations...");
+                PythonContext.Initialize();
+                _logger.LogInformation("✅ PythonContext initialized successfully");
+            }
+
+            try
+            {
+                await RunCollectionExistenceTestAsync();
+                _logger!.LogInformation("✅ Collection existence test completed successfully");
+            }
+            catch (Exception ex)
+            {
+                _logger!.LogError(ex, "❌ Collection existence test failed");
+                throw;
+            }
+        }
+
+        private async Task RunCollectionExistenceTestAsync()
+        {
+            const string COLLECTION_NAME = "NonExistentCollection";
+            
+            // Setup a single user environment
+            await SetupUserEnvironmentAsync(_userA);
+            
+            _logger!.LogInformation("🧪 Testing FullSyncAsync with non-existent collection...");
+            
+            // Initialize Dolt repository but don't create any documents
+            await _userA.DoltCli.InitAsync();
+            
+            // Create documents table structure
+            var createTableSql = @"
+                CREATE TABLE IF NOT EXISTS documents (
+                    doc_id VARCHAR(255) PRIMARY KEY,
+                    collection_name VARCHAR(255) NOT NULL,
+                    title VARCHAR(255),
+                    content TEXT,
+                    content_hash VARCHAR(64),
+                    doc_type VARCHAR(100),
+                    metadata JSON,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+                )";
+            await _userA.DoltCli.QueryAsync<dynamic>(createTableSql);
+            
+            // Initial commit
+            await _userA.DoltCli.AddAllAsync();
+            await _userA.DoltCli.CommitAsync("Initial commit with empty documents table");
+            
+            // Verify ChromaDB is empty - no collections should exist
+            var existingCollections = await _userA.ChromaService.ListCollectionsAsync();
+            _logger!.LogInformation("Existing collections before sync: {Collections}", 
+                string.Join(", ", existingCollections));
+            
+            // This should NOT fail even though the collection doesn't exist in ChromaDB
+            // and there are no documents in Dolt
+            var syncResult = await _userA.SyncManager.FullSyncAsync(COLLECTION_NAME);
+            
+            // Verify the sync completed without errors
+            Assert.That(syncResult.Status, Is.EqualTo(SyncStatusV2.Completed), 
+                $"FullSync should complete successfully even with non-existent collection. Error: {syncResult.ErrorMessage}");
+            
+            Assert.That(syncResult.Added, Is.EqualTo(0), 
+                "Should have 0 documents added since Dolt is empty");
+            
+            // Verify the collection was created in ChromaDB
+            var collectionsAfterSync = await _userA.ChromaService.ListCollectionsAsync();
+            Assert.That(collectionsAfterSync, Does.Contain(COLLECTION_NAME), 
+                "Collection should be created in ChromaDB");
+            
+            _logger!.LogInformation("✅ FullSync handled non-existent collection gracefully");
+            
+            // Now test with some actual documents
+            _logger!.LogInformation("🧪 Testing FullSyncAsync with documents in non-existent collection...");
+            
+            // Add a document to Dolt
+            var insertSql = @"
+                INSERT INTO documents (doc_id, collection_name, title, content, content_hash, doc_type, metadata)
+                VALUES ('test_doc_1', @collection, 'Test Document', 'This is a test document content.', 'hash123', 'text', '{}')";
+            
+            await _userA.DoltCli.QueryAsync<dynamic>(insertSql.Replace("@collection", $"'{COLLECTION_NAME}'"));
+            await _userA.DoltCli.AddAllAsync();
+            await _userA.DoltCli.CommitAsync("Added test document");
+            
+            // Delete the collection from ChromaDB to simulate fresh clone scenario
+            await _userA.ChromaService.DeleteCollectionAsync(COLLECTION_NAME);
+            
+            // Verify collection no longer exists
+            var collectionsBeforeSecondSync = await _userA.ChromaService.ListCollectionsAsync();
+            Assert.That(collectionsBeforeSecondSync, Does.Not.Contain(COLLECTION_NAME), 
+                "Collection should not exist before second sync");
+            
+            // Run sync again - this should handle the missing collection gracefully and recreate it
+            var secondSyncResult = await _userA.SyncManager.FullSyncAsync(COLLECTION_NAME);
+            
+            Assert.That(secondSyncResult.Status, Is.EqualTo(SyncStatusV2.Completed), 
+                $"Second FullSync should complete successfully. Error: {secondSyncResult.ErrorMessage}");
+            
+            Assert.That(secondSyncResult.Added, Is.EqualTo(1), 
+                "Should have 1 document added from Dolt");
+            
+            // Verify the collection was recreated and document exists
+            var finalCollections = await _userA.ChromaService.ListCollectionsAsync();
+            Assert.That(finalCollections, Does.Contain(COLLECTION_NAME), 
+                "Collection should be recreated in ChromaDB");
+            
+            var documents = await _userA.ChromaService.GetDocumentsAsync(COLLECTION_NAME);
+            Assert.That(documents, Is.Not.Null, "Should have documents in the collection");
+            
+            // Cast to dynamic to access Documents property
+            var documentsResponse = documents as dynamic;
+            if (documentsResponse != null && documentsResponse.documents != null)
+            {
+                var docList = documentsResponse.documents as IList;
+                Assert.That(docList, Is.Not.Null.And.Count.GreaterThan(0), 
+                    "Should have at least one document in ChromaDB");
+            }
+            else
+            {
+                Assert.Fail("Documents response does not contain expected documents property");
+            }
+            
+            _logger!.LogInformation("✅ FullSync successfully recreated collection and synced documents");
         }
 
         private async Task RunMultiUserWorkflowAsync()

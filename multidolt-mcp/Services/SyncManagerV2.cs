@@ -449,12 +449,13 @@ namespace DMMS.Services
                 if (!pushResult.Success)
                 {
                     result.Status = SyncStatusV2.Failed;
-                    result.ErrorMessage = "Push failed";
+                    result.ErrorMessage = pushResult.Message ?? "Push failed";
                     return result;
                 }
 
                 result.Status = SyncStatusV2.Completed;
                 result.CommitHash = await _dolt.GetHeadCommitHashAsync();
+                result.Data = pushResult; // Store the detailed push result
                 
                 _logger.LogInformation("Push completed successfully");
             }
@@ -582,15 +583,83 @@ namespace DMMS.Services
             
             try
             {
-                collectionName ??= (await _chromaService.ListCollectionsAsync()).FirstOrDefault() ?? "default";
+                // If no collection name provided, sync all collections found in Dolt database
+                if (collectionName == null)
+                {
+                    var doltCollections = await _deltaDetector.GetAvailableCollectionNamesAsync();
+                    if (doltCollections.Any())
+                    {
+                        _logger.LogInformation("Found {Count} collections in Dolt database, syncing all: {Collections}", 
+                            doltCollections.Count, string.Join(", ", doltCollections));
+                        
+                        // Sync all collections found in Dolt
+                        foreach (var collection in doltCollections)
+                        {
+                            var collectionResult = await SyncSingleCollectionAsync(collection);
+                            result.Added += collectionResult.Added;
+                            result.Modified += collectionResult.Modified;
+                            result.Deleted += collectionResult.Deleted;
+                            result.ChunksProcessed += collectionResult.ChunksProcessed;
+                            
+                            if (collectionResult.Status == SyncStatusV2.Failed)
+                            {
+                                result.Status = SyncStatusV2.Failed;
+                                result.ErrorMessage = collectionResult.ErrorMessage;
+                                return result;
+                            }
+                        }
+                        
+                        result.Status = SyncStatusV2.Completed;
+                        _logger.LogInformation("Full sync completed for all collections: {Added} documents, {Chunks} chunks", 
+                            result.Added, result.ChunksProcessed);
+                        return result;
+                    }
+                    else
+                    {
+                        collectionName = (await _chromaService.ListCollectionsAsync()).FirstOrDefault() ?? "default";
+                        _logger.LogInformation("No collections found in Dolt, using collection: {Collection}", collectionName);
+                    }
+                }
                 
+                // Sync single collection
+                return await SyncSingleCollectionAsync(collectionName);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to perform full sync");
+                result.Status = SyncStatusV2.Failed;
+                result.ErrorMessage = ex.Message;
+                return result;
+            }
+        }
+
+        /// <summary>
+        /// Synchronize a single collection from Dolt to ChromaDB
+        /// </summary>
+        private async Task<SyncResultV2> SyncSingleCollectionAsync(string collectionName)
+        {
+            var result = new SyncResultV2 { Direction = SyncDirection.DoltToChroma };
+            
+            try
+            {
                 _logger.LogInformation("Performing full sync for collection {Collection}", collectionName);
                 
                 // Get all documents from Dolt
                 var documents = await _deltaDetector.GetAllDocumentsAsync(collectionName);
                 
-                // Clear existing collection in ChromaDB
-                await _chromaService.DeleteCollectionAsync(collectionName);
+                // Clear existing collection in ChromaDB - safely handle non-existent collections
+                var existingCollections = await _chromaService.ListCollectionsAsync();
+                if (existingCollections.Contains(collectionName))
+                {
+                    _logger.LogInformation("Deleting existing collection {Collection}", collectionName);
+                    await _chromaService.DeleteCollectionAsync(collectionName);
+                }
+                else
+                {
+                    _logger.LogInformation("Collection {Collection} does not exist, skipping delete", collectionName);
+                }
+                
+                _logger.LogInformation("Creating collection {Collection}", collectionName);
                 await _chromaService.CreateCollectionAsync(collectionName);
                 
                 // Sync all documents
@@ -614,12 +683,12 @@ namespace DMMS.Services
                 await _deltaDetector.UpdateSyncStateAsync(collectionName, commitHash, result.Added, result.ChunksProcessed);
                 
                 result.Status = SyncStatusV2.Completed;
-                _logger.LogInformation("Full sync completed: {Added} documents, {Chunks} chunks", 
-                    result.Added, result.ChunksProcessed);
+                _logger.LogInformation("Collection {Collection} sync completed: {Added} documents, {Chunks} chunks", 
+                    collectionName, result.Added, result.ChunksProcessed);
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Failed to perform full sync");
+                _logger.LogError(ex, "Failed to perform sync for collection {Collection}", collectionName);
                 result.Status = SyncStatusV2.Failed;
                 result.ErrorMessage = ex.Message;
             }
