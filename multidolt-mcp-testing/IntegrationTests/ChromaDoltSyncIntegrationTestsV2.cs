@@ -307,8 +307,8 @@ namespace DMMSTesting.IntegrationTests
             {
                 await user.ChromaService.AddDocumentsAsync(
                     collectionName,
-                    new List<string> { id },
                     new List<string> { content },
+                    new List<string> { id },
                     new List<Dictionary<string, object>> { metadata });
             }
             
@@ -504,8 +504,8 @@ namespace DMMSTesting.IntegrationTests
             {
                 await user.ChromaService.AddDocumentsAsync(
                     collectionName,
-                    new List<string> { id },
                     new List<string> { content },
+                    new List<string> { id },
                     new List<Dictionary<string, object>> { metadata });
             }
             
@@ -635,8 +635,8 @@ namespace DMMSTesting.IntegrationTests
             {
                 await user.ChromaService.AddDocumentsAsync(
                     collectionName,
-                    new List<string> { id },
                     new List<string> { content },
+                    new List<string> { id },
                     new List<Dictionary<string, object>> { metadata });
             }
             
@@ -791,8 +791,8 @@ namespace DMMSTesting.IntegrationTests
                         
                         await user.ChromaService.AddDocumentsAsync(
                             collectionName,
-                            chromaEntries.Ids,
                             chromaEntries.Documents,
+                            chromaEntries.Ids,
                             chromaEntries.Metadatas);
                         
                         result.Added++;

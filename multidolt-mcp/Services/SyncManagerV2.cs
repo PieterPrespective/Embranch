@@ -678,8 +678,8 @@ namespace DMMS.Services
                     
                     await _chromaService.AddDocumentsAsync(
                         collectionName,
-                        chromaEntries.Ids,
                         chromaEntries.Documents,
+                        chromaEntries.Ids,
                         chromaEntries.Metadatas);
                     
                     result.Added++;
@@ -729,8 +729,8 @@ namespace DMMS.Services
                     {
                         await _chromaService.AddDocumentsAsync(
                             collectionName,
-                            chromaEntries.Ids,
                             chromaEntries.Documents,
+                            chromaEntries.Ids,
                             chromaEntries.Metadatas);
                         result.Added++;
                     }
@@ -743,8 +743,8 @@ namespace DMMS.Services
                         // Add updated chunks
                         await _chromaService.AddDocumentsAsync(
                             collectionName,
-                            chromaEntries.Ids,
                             chromaEntries.Documents,
+                            chromaEntries.Ids,
                             chromaEntries.Metadatas);
                         result.Modified++;
                     }
@@ -887,8 +887,8 @@ namespace DMMS.Services
                         // Add new/updated chunks
                         await _chromaService.AddDocumentsAsync(
                             collectionName,
-                            chromaEntries.Ids,
                             chromaEntries.Documents,
+                            chromaEntries.Ids,
                             chromaEntries.Metadatas);
                         
                         if (diff.DiffType == "added")
