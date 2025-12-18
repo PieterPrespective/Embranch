@@ -595,6 +595,15 @@ public class DoltCloneTool
                 // Empty repository has no commits, this is fine
             }
 
+            // Ensure database is ready before sync (PP13-49 fix)
+            _logger.LogInformation($"[DoltCloneTool.DoltClone] Ensuring database readiness before sync operation");
+            bool isDatabaseReady = await EnsureDatabaseReadyAsync(maxRetries: 8, delayMs: 250);
+            
+            if (!isDatabaseReady)
+            {
+                _logger.LogWarning($"[DoltCloneTool.DoltClone] ⚠️ Database readiness timeout - proceeding with sync anyway");
+            }
+
             // Sync to ChromaDB
             int documentsLoaded = 0;
             List<string> collectionsCreated = new();
@@ -1041,6 +1050,337 @@ INSERT INTO sync_operations (
         {
             _logger.LogError(ex, $"[DoltCloneTool.InitializeSyncStateAsync] ❌ Failed to initialize sync state: {ex.Message}");
             throw new Exception($"Failed to initialize sync state: {ex.Message}", ex);
+        }
+    }
+
+    /// <summary>
+    /// Ensures the Dolt database is fully ready for queries after clone completion.
+    /// This addresses the PP13-49 timing issue where clone returns success before 
+    /// the database is fully queryable, causing GetAvailableCollectionNamesAsync to return 0 collections.
+    /// </summary>
+    /// <param name="maxRetries">Maximum number of retry attempts</param>
+    /// <param name="delayMs">Delay between attempts in milliseconds</param>
+    /// <returns>True if database is ready, false if timeout reached</returns>
+    private async Task<bool> EnsureDatabaseReadyAsync(int maxRetries = 5, int delayMs = 500)
+    {
+        _logger.LogInformation("[DoltCloneTool.EnsureDatabaseReadyAsync] 🔍 Starting database readiness verification after clone");
+        
+        for (int attempt = 1; attempt <= maxRetries; attempt++)
+        {
+            try
+            {
+                _logger.LogDebug("[DoltCloneTool.EnsureDatabaseReadyAsync] Attempt {Attempt}/{MaxRetries} - Testing database readiness", 
+                    attempt, maxRetries);
+
+                // Test 1: Verify basic database connectivity
+                _logger.LogDebug("[DoltCloneTool.EnsureDatabaseReadyAsync] Test 1: Basic connectivity");
+                var tablesResult = await _doltCli.QueryAsync<dynamic>("SHOW TABLES");
+                var tablesList = tablesResult.ToList();
+                _logger.LogDebug("[DoltCloneTool.EnsureDatabaseReadyAsync] ✓ Database responsive, found {Count} tables", tablesList.Count);
+                
+                // Log all table names for debugging  
+                foreach (var table in tablesList)
+                {
+                    var tableName = GetTableNameFromResult(table);
+                    _logger.LogDebug("[DoltCloneTool.EnsureDatabaseReadyAsync] Found table: '{TableName}'", (object)(tableName ?? "unknown"));
+                    
+                    // Enhanced diagnostics for table structure investigation
+                    _logger.LogDebug("[DoltCloneTool.EnsureDatabaseReadyAsync] DIAGNOSTICS - Table object type: {Type}", (object)(table?.GetType()?.FullName ?? "null"));
+                    
+                    // Log all properties and their values - avoid dynamic null comparison with JsonElement
+                    bool shouldLogProperties = false;
+                    try
+                    {
+                        if (table is System.Text.Json.JsonElement jsonElement)
+                        {
+                            shouldLogProperties = jsonElement.ValueKind != System.Text.Json.JsonValueKind.Null && 
+                                                jsonElement.ValueKind != System.Text.Json.JsonValueKind.Undefined;
+                        }
+                        else
+                        {
+                            shouldLogProperties = table != null;
+                        }
+                    }
+                    catch
+                    {
+                        shouldLogProperties = false;
+                    }
+                    
+                    if (shouldLogProperties)
+                    {
+                        var tableType = table.GetType();
+                        foreach (var prop in tableType.GetProperties())
+                        {
+                            try
+                            {
+                                var value = prop.GetValue(table);
+                                _logger.LogDebug("[DoltCloneTool.EnsureDatabaseReadyAsync] DIAGNOSTICS - Property '{PropertyName}' = '{PropertyValue}'", 
+                                    (object)prop.Name, (object)(value?.ToString() ?? "null"));
+                            }
+                            catch (Exception ex)
+                            {
+                                _logger.LogDebug("[DoltCloneTool.EnsureDatabaseReadyAsync] DIAGNOSTICS - Property '{PropertyName}' failed: {Error}", 
+                                    (object)prop.Name, (object)ex.Message);
+                            }
+                        }
+                    }
+                }
+
+                // Test 2: Verify documents table exists and is queryable
+                _logger.LogDebug("[DoltCloneTool.EnsureDatabaseReadyAsync] Test 2: Documents table accessibility");
+                bool documentsTableExists = tablesList.Any(table => 
+                {
+                    // Handle different possible column names for table listing
+                    var tableName = GetTableNameFromResult(table);
+                    return "documents".Equals(tableName, StringComparison.OrdinalIgnoreCase);
+                });
+
+                if (documentsTableExists)
+                {
+                    // Test 3: Verify we can query the documents table structure and content
+                    _logger.LogDebug("[DoltCloneTool.EnsureDatabaseReadyAsync] Test 3: Documents table query test");
+                    var documentsCount = await _doltCli.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM documents");
+                    _logger.LogDebug("[DoltCloneTool.EnsureDatabaseReadyAsync] ✓ Documents table queryable, contains {Count} documents", documentsCount);
+
+                    // Test 4: Verify collection discovery query works (the exact query that was failing)
+                    _logger.LogDebug("[DoltCloneTool.EnsureDatabaseReadyAsync] Test 4: Collection discovery query test");
+                    var collectionsResult = await _doltCli.QueryAsync<dynamic>(
+                        "SELECT DISTINCT collection_name FROM documents WHERE collection_name IS NOT NULL AND collection_name != ''");
+                    var collections = collectionsResult.ToList();
+                    _logger.LogDebug("[DoltCloneTool.EnsureDatabaseReadyAsync] ✓ Collection discovery query successful, found {Count} collections", collections.Count);
+
+                    foreach (var collection in collections)
+                    {
+                        var collectionName = GetCollectionNameFromResult(collection);
+                        _logger.LogDebug("[DoltCloneTool.EnsureDatabaseReadyAsync] Found collection: {Collection}", (object)(collectionName ?? "unknown"));
+                    }
+
+                    _logger.LogInformation("[DoltCloneTool.EnsureDatabaseReadyAsync] ✅ Database readiness verified on attempt {Attempt}/{MaxRetries}", 
+                        attempt, maxRetries);
+                    return true;
+                }
+                else
+                {
+                    _logger.LogDebug("[DoltCloneTool.EnsureDatabaseReadyAsync] Documents table not found yet, attempt {Attempt}/{MaxRetries}", 
+                        attempt, maxRetries);
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "[DoltCloneTool.EnsureDatabaseReadyAsync] Database not ready yet on attempt {Attempt}/{MaxRetries}: {Error}", 
+                    attempt, maxRetries, ex.Message);
+            }
+
+            // Wait before next attempt (unless this was the last attempt)
+            if (attempt < maxRetries)
+            {
+                _logger.LogDebug("[DoltCloneTool.EnsureDatabaseReadyAsync] Waiting {Delay}ms before next attempt", delayMs);
+                await Task.Delay(delayMs);
+            }
+        }
+
+        _logger.LogWarning("[DoltCloneTool.EnsureDatabaseReadyAsync] ⚠️ Database readiness timeout after {MaxRetries} attempts", maxRetries);
+        return false;
+    }
+
+    /// <summary>
+    /// Helper method to extract table name from dynamic query result
+    /// PP13-49-C1: Enhanced to handle System.Text.Json.JsonElement objects properly
+    /// </summary>
+    private static string? GetTableNameFromResult(dynamic tableRow)
+    {
+        try
+        {
+            // PP13-49-C1 FIX: Handle JsonElement objects properly
+            if (tableRow is System.Text.Json.JsonElement jsonElement)
+            {
+                return GetTableNameFromJsonElement(jsonElement);
+            }
+            
+            // Legacy fallback for other dynamic object types
+            return GetTableNameFromDynamicObject(tableRow);
+        }
+        catch (Exception ex)
+        {
+            // Enhanced error logging for debugging
+            Console.WriteLine($"[GetTableNameFromResult] Error extracting table name: {ex.Message}");
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Extract table name from JsonElement object (SHOW TABLES returns JsonElement via DoltCli.QueryAsync)
+    /// PP13-49-C1: Root cause fix for JsonElement handling
+    /// </summary>
+    private static string? GetTableNameFromJsonElement(System.Text.Json.JsonElement jsonElement)
+    {
+        try
+        {
+            // JsonElement requires specific property access methods
+            // The SHOW TABLES command returns objects like: {"Tables_in_database-name": "table_name"}
+            
+            // First, try to enumerate all properties to find Tables_in_* pattern
+            if (jsonElement.ValueKind == System.Text.Json.JsonValueKind.Object)
+            {
+                foreach (var property in jsonElement.EnumerateObject())
+                {
+                    // Check for Tables_in_* pattern (this is the standard SHOW TABLES output format)
+                    if (property.Name.StartsWith("Tables_in_", StringComparison.OrdinalIgnoreCase))
+                    {
+                        var tableName = property.Value.GetString();
+                        if (!string.IsNullOrWhiteSpace(tableName))
+                        {
+                            return tableName;
+                        }
+                    }
+                }
+                
+                // Fallback: try common property names
+                string[] commonPropertyNames = { "Table", "table_name", "name", "Name" };
+                foreach (var propName in commonPropertyNames)
+                {
+                    if (jsonElement.TryGetProperty(propName, out var property))
+                    {
+                        var tableName = property.GetString();
+                        if (!string.IsNullOrWhiteSpace(tableName))
+                        {
+                            return tableName;
+                        }
+                    }
+                }
+                
+                // Final fallback: get the first string property value
+                foreach (var property in jsonElement.EnumerateObject())
+                {
+                    if (property.Value.ValueKind == System.Text.Json.JsonValueKind.String)
+                    {
+                        var tableName = property.Value.GetString();
+                        if (!string.IsNullOrWhiteSpace(tableName))
+                        {
+                            return tableName;
+                        }
+                    }
+                }
+            }
+            
+            return null;
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[GetTableNameFromJsonElement] Error: {ex.Message}");
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Legacy method for non-JsonElement dynamic objects
+    /// </summary>
+    private static string? GetTableNameFromDynamicObject(dynamic tableRow)
+    {
+        try
+        {
+            // Try different possible column names from SHOW TABLES output
+            // The column name format is "Tables_in_{database_name}" but C# property names can't have hyphens
+            // So we need to check all properties and find the one that starts with "Tables_in_"
+            
+            // First try the common cases
+            var result = tableRow?.Tables_in_dolt_repo?.ToString() ??
+                        tableRow?.Tables_in_dolt_repo_10?.ToString() ?? 
+                        tableRow?.Table?.ToString();
+            
+            if (result != null)
+                return result;
+                
+            // If that fails, examine all properties to find Tables_in_* pattern
+            var type = tableRow?.GetType();
+            if (type != null)
+            {
+                foreach (var property in type.GetProperties())
+                {
+                    if (property.Name.StartsWith("Tables_in_", StringComparison.OrdinalIgnoreCase))
+                    {
+                        return property.GetValue(tableRow)?.ToString();
+                    }
+                }
+                
+                // Final fallback - get the first property value
+                var firstProperty = type.GetProperties().FirstOrDefault();
+                return firstProperty?.GetValue(tableRow)?.ToString();
+            }
+            
+            return null;
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[GetTableNameFromDynamicObject] Error: {ex.Message}");
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Helper method to extract collection name from dynamic query result
+    /// PP13-49-C1: Enhanced to handle System.Text.Json.JsonElement objects properly
+    /// </summary>
+    private static string? GetCollectionNameFromResult(dynamic collectionRow)
+    {
+        try
+        {
+            // PP13-49-C1 FIX: Handle JsonElement objects properly
+            if (collectionRow is System.Text.Json.JsonElement jsonElement)
+            {
+                return GetCollectionNameFromJsonElement(jsonElement);
+            }
+            
+            // Legacy fallback for other dynamic object types
+            return collectionRow?.collection_name?.ToString();
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Extract collection name from JsonElement object (collection queries return JsonElement)
+    /// PP13-49-C1: Root cause fix for JsonElement handling in collection discovery
+    /// </summary>
+    private static string? GetCollectionNameFromJsonElement(System.Text.Json.JsonElement jsonElement)
+    {
+        try
+        {
+            if (jsonElement.ValueKind == System.Text.Json.JsonValueKind.Object)
+            {
+                // Try to get the collection_name property
+                if (jsonElement.TryGetProperty("collection_name", out var collectionNameProperty))
+                {
+                    return collectionNameProperty.GetString();
+                }
+                
+                // Fallback: try other possible property names
+                string[] possibleNames = { "name", "Name", "collectionName", "collection" };
+                foreach (var propName in possibleNames)
+                {
+                    if (jsonElement.TryGetProperty(propName, out var property))
+                    {
+                        return property.GetString();
+                    }
+                }
+                
+                // Final fallback: get the first string property value
+                foreach (var property in jsonElement.EnumerateObject())
+                {
+                    if (property.Value.ValueKind == System.Text.Json.JsonValueKind.String)
+                    {
+                        return property.Value.GetString();
+                    }
+                }
+            }
+            
+            return null;
+        }
+        catch
+        {
+            return null;
         }
     }
 }

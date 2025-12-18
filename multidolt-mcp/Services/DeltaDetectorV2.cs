@@ -369,16 +369,52 @@ namespace DMMS.Services
                 {
                     _logger?.LogInformation("PP13-49: Processing row: {Row}", (object)(row?.ToString() ?? "NULL"));
                     
-                    if (row?.collection_name != null)
+                    // PP13-49-C1 FIX: Handle JsonElement objects properly (same issue as in DoltCloneTool)
+                    string? collectionName = null;
+                    
+                    if (row is System.Text.Json.JsonElement jsonElement)
                     {
-                        var collectionName = row.collection_name.ToString();
+                        _logger?.LogInformation("PP13-49: Row is JsonElement, using proper JSON access");
+                        if (jsonElement.ValueKind == System.Text.Json.JsonValueKind.Object)
+                        {
+                            if (jsonElement.TryGetProperty("collection_name", out var collectionProperty))
+                            {
+                                collectionName = collectionProperty.GetString();
+                                _logger?.LogInformation("PP13-49: Extracted collection_name via JsonElement: {Collection}", (object)(collectionName ?? "NULL"));
+                            }
+                            else
+                            {
+                                _logger?.LogWarning("PP13-49: JsonElement does not have collection_name property");
+                            }
+                        }
+                    }
+                    else
+                    {
+                        // Legacy dynamic object handling
+                        _logger?.LogInformation("PP13-49: Row is dynamic object, using legacy access");
+                        try
+                        {
+                            if (row?.collection_name != null)
+                            {
+                                collectionName = row.collection_name.ToString();
+                                _logger?.LogInformation("PP13-49: Extracted collection_name via dynamic: {Collection}", (object)collectionName);
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger?.LogWarning("PP13-49: Dynamic access failed: {Error}", (object)ex.Message);
+                        }
+                    }
+                    
+                    if (!string.IsNullOrWhiteSpace(collectionName))
+                    {
                         collections.Add(collectionName);
-                        _logger?.LogInformation("PP13-49: Successfully extracted collection name: {Collection}", (object)collectionName);
+                        _logger?.LogInformation("PP13-49: Successfully added collection name: {Collection}", (object)collectionName);
                         _logger?.LogInformation("GetAvailableCollectionNamesAsync: Found collection from documents: {Collection}", (object)collectionName);
                     }
                     else
                     {
-                        _logger?.LogWarning("PP13-49: Row has null collection_name: {Row}", (object)(row?.ToString() ?? "NULL"));
+                        _logger?.LogWarning("PP13-49: Row has null or empty collection_name: {Row}", (object)(row?.ToString() ?? "NULL"));
                     }
                 }
 
@@ -414,9 +450,37 @@ namespace DMMS.Services
 
                 foreach (var row in results)
                 {
-                    if (row?.collection_name != null)
+                    // PP13-49-C1 FIX: Handle JsonElement objects properly (same pattern as documents query)
+                    string? collectionName = null;
+                    
+                    if (row is System.Text.Json.JsonElement jsonElement)
                     {
-                        var collectionName = row.collection_name.ToString();
+                        if (jsonElement.ValueKind == System.Text.Json.JsonValueKind.Object)
+                        {
+                            if (jsonElement.TryGetProperty("collection_name", out var collectionProperty))
+                            {
+                                collectionName = collectionProperty.GetString();
+                            }
+                        }
+                    }
+                    else
+                    {
+                        // Legacy dynamic object handling
+                        try
+                        {
+                            if (row?.collection_name != null)
+                            {
+                                collectionName = row.collection_name.ToString();
+                            }
+                        }
+                        catch
+                        {
+                            // Silent fallback
+                        }
+                    }
+                    
+                    if (!string.IsNullOrWhiteSpace(collectionName))
+                    {
                         collections.Add(collectionName);
                         _logger?.LogInformation("GetAvailableCollectionNamesAsync: Found collection from collections table: {Collection}", (object)collectionName);
                     }
