@@ -262,6 +262,335 @@ public class PythonNetDeadlockTest
         }
     }
 
+    /// <summary>
+    /// Test CreateCollection deadlock scenario specifically - rapid collection creation/deletion cycles
+    /// Added for PP13-53 to ensure CreateCollection operations complete reliably
+    /// </summary>
+    [Test]
+    [Timeout(30000)]
+    public async Task CreateCollectionDeadlockTest_ShouldCompleteWithinTimeout()
+    {
+        _logger!.LogInformation("=== Testing CreateCollection Deadlock Prevention (PP13-53) ===");
+        
+        if (!PythonContext.IsInitialized)
+        {
+            PythonContext.Initialize();
+        }
+
+        var testPath = Path.Combine(_testDirectory, "createcollection_deadlock_test");
+        var config = Options.Create(new ServerConfiguration { ChromaDataPath = testPath });
+        var serviceLogger = LoggerFactory.Create(b => b.AddConsole()).CreateLogger<ChromaPythonService>();
+
+        try
+        {
+            using var service = new ChromaPythonService(serviceLogger, config);
+            
+            _logger.LogInformation("Testing rapid collection creation/deletion cycles...");
+            
+            // Test 1: Sequential collection creation
+            var sequentialStart = DateTime.UtcNow;
+            for (int i = 0; i < 5; i++)
+            {
+                var collectionName = $"seq_collection_{i}";
+                _logger.LogInformation($"Creating collection {collectionName}...");
+                
+                var createStart = DateTime.UtcNow;
+                await service.CreateCollectionAsync(collectionName);
+                var createTime = (DateTime.UtcNow - createStart).TotalMilliseconds;
+                
+                _logger.LogInformation($"✅ Collection {collectionName} created in {createTime:F0}ms");
+                Assert.That(createTime, Is.LessThan(5000), $"Collection creation took too long: {createTime:F0}ms");
+            }
+            var sequentialTime = (DateTime.UtcNow - sequentialStart).TotalMilliseconds;
+            _logger.LogInformation($"Sequential creation of 5 collections completed in {sequentialTime:F0}ms");
+            
+            // Test 2: Concurrent collection creation
+            _logger.LogInformation("Testing concurrent collection creation...");
+            var concurrentStart = DateTime.UtcNow;
+            var tasks = new List<Task>();
+            
+            for (int i = 0; i < 3; i++)
+            {
+                var index = i;
+                tasks.Add(Task.Run(async () =>
+                {
+                    var collectionName = $"concurrent_collection_{index}";
+                    _logger.LogInformation($"[Thread {Thread.CurrentThread.ManagedThreadId}] Creating {collectionName}...");
+                    
+                    var createStart = DateTime.UtcNow;
+                    await service.CreateCollectionAsync(collectionName);
+                    var createTime = (DateTime.UtcNow - createStart).TotalMilliseconds;
+                    
+                    _logger.LogInformation($"[Thread {Thread.CurrentThread.ManagedThreadId}] ✅ {collectionName} created in {createTime:F0}ms");
+                    Assert.That(createTime, Is.LessThan(15000), $"Concurrent creation took too long: {createTime:F0}ms");
+                }));
+            }
+            
+            await Task.WhenAll(tasks);
+            var concurrentTime = (DateTime.UtcNow - concurrentStart).TotalMilliseconds;
+            _logger.LogInformation($"Concurrent creation of 3 collections completed in {concurrentTime:F0}ms");
+            
+            // Test 3: Create-Delete-Recreate cycle (tests state cleanup)
+            _logger.LogInformation("Testing create-delete-recreate cycle...");
+            var cycleName = "cycle_collection";
+            
+            for (int i = 0; i < 3; i++)
+            {
+                _logger.LogInformation($"Cycle {i + 1}: Creating {cycleName}...");
+                var cycleStart = DateTime.UtcNow;
+                
+                await service.CreateCollectionAsync(cycleName);
+                _logger.LogInformation($"Cycle {i + 1}: Deleting {cycleName}...");
+                await service.DeleteCollectionAsync(cycleName);
+                
+                var cycleTime = (DateTime.UtcNow - cycleStart).TotalMilliseconds;
+                _logger.LogInformation($"Cycle {i + 1} completed in {cycleTime:F0}ms");
+                Assert.That(cycleTime, Is.LessThan(10000), $"Create-delete cycle took too long: {cycleTime:F0}ms");
+            }
+            
+            _logger.LogInformation("✅ All CreateCollection deadlock tests passed!");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "❌ CreateCollection deadlock test failed");
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// Test rapid sequential operations similar to DetectLocalChangesAsync workflow to prevent queue saturation
+    /// </summary>
+    [Test]
+    [Timeout(30000)]
+    public async Task MultipleSequentialOperations_ShouldNotSaturateQueue()
+    {
+        _logger!.LogInformation("=== Testing Multiple Sequential Operations (Queue Saturation Prevention) ===");
+        
+        if (!PythonContext.IsInitialized)
+        {
+            PythonContext.Initialize();
+        }
+
+        var testPath = Path.Combine(_testDirectory, "queue_saturation_test");
+        var config = Options.Create(new ServerConfiguration { ChromaDataPath = testPath });
+        var serviceLogger = LoggerFactory.Create(b => b.AddConsole()).CreateLogger<ChromaPythonService>();
+
+        try
+        {
+            using var service = new ChromaPythonService(serviceLogger, config);
+            
+            _logger.LogInformation("Creating test collection with documents...");
+            await service.CreateCollectionAsync("test_collection");
+            
+            // Add some test documents to make operations more realistic
+            await service.AddDocumentsAsync("test_collection", 
+                new List<string> { "doc1_chunk_0", "doc2_chunk_0", "doc3_chunk_0" },
+                new List<string> { "Document 1 content", "Document 2 content", "Document 3 content" },
+                new List<Dictionary<string, object>>
+                {
+                    new Dictionary<string, object> { ["doc_id"] = "doc1", ["chunk_index"] = 0, ["is_local_change"] = true },
+                    new Dictionary<string, object> { ["doc_id"] = "doc2", ["chunk_index"] = 0, ["is_local_change"] = false },
+                    new Dictionary<string, object> { ["doc_id"] = "doc3", ["chunk_index"] = 0, ["is_local_change"] = true }
+                });
+
+            var startTime = DateTime.UtcNow;
+            _logger.LogInformation("Starting 15 rapid sequential operations...");
+            
+            // Simulate DetectLocalChangesAsync operation pattern - this was causing the queue saturation
+            var operationTasks = new List<Task>();
+            
+            for (int i = 0; i < 15; i++)
+            {
+                var operationIndex = i;
+                operationTasks.Add(Task.Run(async () =>
+                {
+                    // Simulate the operations that DetectLocalChangesAsync performs
+                    _logger.LogDebug($"Operation {operationIndex}: Starting");
+                    
+                    // 1. GetDocumentsAsync (similar to GetFlaggedLocalChangesAsync)
+                    await service.GetDocumentsAsync("test_collection", 
+                        where: new Dictionary<string, object> { ["is_local_change"] = true });
+                    
+                    // 2. GetDocumentsAsync (similar to GetAllChromaDocumentsAsync)  
+                    await service.GetDocumentsAsync("test_collection");
+                    
+                    _logger.LogDebug($"Operation {operationIndex}: Completed");
+                }));
+            }
+            
+            // Wait for all operations to complete
+            await Task.WhenAll(operationTasks);
+            
+            var elapsed = (DateTime.UtcNow - startTime).TotalMilliseconds;
+            _logger.LogInformation($"✅ All 15 operations completed in {elapsed:F0}ms without saturation");
+            
+            // Verify queue is not saturated
+            var queueStats = PythonContext.GetQueueStats();
+            _logger.LogInformation($"Final queue size: {queueStats.QueueSize}, Over threshold: {queueStats.IsOverThreshold}");
+            
+            Assert.That(elapsed, Is.LessThan(10000), "Operations should complete within 10 seconds");
+            Assert.That(queueStats.IsOverThreshold, Is.False, "Queue should not be over threshold after operations");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "❌ Multiple sequential operations test failed");
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// Test operation flooding stress scenario with 20-30 operations queued rapidly
+    /// </summary>
+    [Test]
+    [Timeout(45000)]
+    public async Task OperationFloodingStressTest_ShouldNotCauseDeadlock()
+    {
+        _logger!.LogInformation("=== Operation Flooding Stress Test (20-30 Operations) ===");
+        
+        if (!PythonContext.IsInitialized)
+        {
+            PythonContext.Initialize();
+        }
+
+        var testPath = Path.Combine(_testDirectory, "flooding_stress_test");
+        var config = Options.Create(new ServerConfiguration { ChromaDataPath = testPath });
+        var serviceLogger = LoggerFactory.Create(b => b.AddConsole()).CreateLogger<ChromaPythonService>();
+
+        try
+        {
+            using var service = new ChromaPythonService(serviceLogger, config);
+            
+            await service.CreateCollectionAsync("stress_test_collection");
+            
+            var startTime = DateTime.UtcNow;
+            var operationCount = 25; // 25 operations to stress test the queue
+            _logger.LogInformation($"Starting {operationCount} rapid operations flooding test...");
+            
+            // Queue all operations as fast as possible (simulating the worst-case scenario)
+            var tasks = new List<Task>();
+            for (int i = 0; i < operationCount; i++)
+            {
+                var opId = i;
+                tasks.Add(service.ListCollectionsAsync().ContinueWith(_ => 
+                {
+                    _logger.LogDebug($"Flood operation {opId} completed");
+                }));
+            }
+            
+            // Monitor queue size during flooding
+            var monitoringTask = Task.Run(async () =>
+            {
+                var maxQueueSize = 0;
+                while (!Task.WhenAll(tasks).IsCompleted)
+                {
+                    var stats = PythonContext.GetQueueStats();
+                    maxQueueSize = Math.Max(maxQueueSize, stats.QueueSize);
+                    await Task.Delay(50);
+                }
+                _logger.LogInformation($"Maximum queue size during flooding: {maxQueueSize}");
+                return maxQueueSize;
+            });
+            
+            // Wait for all operations to complete
+            await Task.WhenAll(tasks);
+            var maxQueueSize = await monitoringTask;
+            
+            var elapsed = (DateTime.UtcNow - startTime).TotalMilliseconds;
+            _logger.LogInformation($"✅ All {operationCount} flood operations completed in {elapsed:F0}ms");
+            _logger.LogInformation($"Maximum queue size reached: {maxQueueSize}");
+            
+            Assert.That(elapsed, Is.LessThan(15000), $"Flooding stress test should complete within 15 seconds, took {elapsed:F0}ms");
+            Assert.That(maxQueueSize, Is.LessThan(30), $"Queue should not grow excessively, max size was {maxQueueSize}");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "❌ Operation flooding stress test failed");
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// Test complex ChromaDB operation patterns that simulate DetectLocalChangesAsync workflow 
+    /// to ensure queue saturation doesn't occur with the optimizations
+    /// </summary>
+    [Test]
+    [Timeout(30000)]
+    public async Task ComplexChromaOperationPatterns_ShouldNotCauseQueueSaturation()
+    {
+        _logger!.LogInformation("=== Complex ChromaDB Operation Patterns Test ===");
+        
+        if (!PythonContext.IsInitialized)
+        {
+            PythonContext.Initialize();
+        }
+
+        var testPath = Path.Combine(_testDirectory, "complex_operations_test");
+        var config = Options.Create(new ServerConfiguration { ChromaDataPath = testPath });
+        var serviceLogger = LoggerFactory.Create(b => b.AddConsole()).CreateLogger<ChromaPythonService>();
+
+        try
+        {
+            using var service = new ChromaPythonService(serviceLogger, config);
+            
+            // Set up test collection with documents
+            await service.CreateCollectionAsync("complex_test_collection");
+            await service.AddDocumentsAsync("complex_test_collection",
+                new List<string> { "doc1_chunk_0", "doc2_chunk_0", "doc3_chunk_0", "doc4_chunk_0", "doc5_chunk_0" },
+                new List<string> { "Content 1", "Content 2", "Content 3", "Content 4", "Content 5" },
+                new List<Dictionary<string, object>>
+                {
+                    new Dictionary<string, object> { ["doc_id"] = "doc1", ["chunk_index"] = 0, ["is_local_change"] = true },
+                    new Dictionary<string, object> { ["doc_id"] = "doc2", ["chunk_index"] = 0, ["is_local_change"] = true },
+                    new Dictionary<string, object> { ["doc_id"] = "doc3", ["chunk_index"] = 0, ["is_local_change"] = false },
+                    new Dictionary<string, object> { ["doc_id"] = "doc4", ["chunk_index"] = 0, ["is_local_change"] = true },
+                    new Dictionary<string, object> { ["doc_id"] = "doc5", ["chunk_index"] = 0, ["is_local_change"] = false }
+                });
+
+            var startTime = DateTime.UtcNow;
+            _logger.LogInformation("Starting complex ChromaDB operation patterns...");
+            
+            // Simulate the operation pattern from DetectLocalChangesAsync (the actual problem source):
+            // 1. GetDocumentsAsync with filter (GetFlaggedLocalChangesAsync)
+            // 2. GetDocumentsAsync all (GetAllChromaDocumentsAsync) 
+            // 3. GetDocumentsAsync with filter again (was the duplicate call issue)
+            // 4. Multiple individual GetDocuments calls (was the DocumentExistsInDoltAsync issue)
+            
+            var queueStatsBefore = PythonContext.GetQueueStats();
+            _logger.LogInformation($"Queue before complex operations: Size={queueStatsBefore.QueueSize}, OverThreshold={queueStatsBefore.IsOverThreshold}");
+            
+            // Operation 1: Get flagged documents (simulates GetFlaggedLocalChangesAsync)
+            var flaggedDocs = await service.GetDocumentsAsync("complex_test_collection", 
+                where: new Dictionary<string, object> { ["is_local_change"] = true });
+            
+            // Operation 2: Get all documents (simulates GetAllChromaDocumentsAsync)  
+            var allDocs = await service.GetDocumentsAsync("complex_test_collection");
+            
+            // Operation 3: Simulate the processing that was happening in the foreach loop
+            // This was causing the N individual operations that flooded the queue
+            for (int i = 0; i < 5; i++)
+            {
+                // Each iteration simulates what DocumentExistsInDoltAsync was doing
+                await service.GetDocumentsAsync("complex_test_collection", 
+                    where: new Dictionary<string, object> { ["doc_id"] = $"doc{i + 1}" });
+            }
+            
+            var elapsed = (DateTime.UtcNow - startTime).TotalMilliseconds;
+            var queueStatsAfter = PythonContext.GetQueueStats();
+            
+            _logger.LogInformation($"✅ Complex operations completed in {elapsed:F0}ms");
+            _logger.LogInformation($"Queue after operations: Size={queueStatsAfter.QueueSize}, OverThreshold={queueStatsAfter.IsOverThreshold}");
+            _logger.LogInformation($"Operations processed: flagged docs found={flaggedDocs != null}, all docs found={allDocs != null}");
+            
+            Assert.That(elapsed, Is.LessThan(10000), $"Complex operations should complete in <10 seconds, took {elapsed:F0}ms");
+            Assert.That(queueStatsAfter.IsOverThreshold, Is.False, "Queue should not be over threshold after complex operations");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "❌ Complex operation patterns test failed");
+            throw;
+        }
+    }
+
     [TearDown]
     public void TearDown()
     {

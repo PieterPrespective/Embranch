@@ -125,22 +125,30 @@ public class ChromaPythonService : IChromaDbService, IDisposable
         {
             _logger.LogInformation($"[ChromaPythonService.ListCollectionsAsync] executing on Python thread");
             
-            dynamic client = ChromaClientPool.GetClient(_clientId);
-            dynamic collections = client.list_collections();
-            var result = new List<string>();
-            
-            foreach (dynamic collection in collections)
+            try
             {
-                result.Add(collection.ToString());
+                dynamic client = ChromaClientPool.GetClient(_clientId);
+                dynamic collections = client.list_collections();
+                var result = new List<string>();
+                
+                foreach (dynamic collection in collections)
+                {
+                    result.Add(collection.ToString());
+                }
+
+                if (offset.HasValue)
+                    result = result.Skip(offset.Value).ToList();
+                if (limit.HasValue)
+                    result = result.Take(limit.Value).ToList();
+
+                _logger.LogInformation($"[ChromaPythonService.ListCollectionsAsync] returning result");
+                return result;
             }
-
-            if (offset.HasValue)
-                result = result.Skip(offset.Value).ToList();
-            if (limit.HasValue)
-                result = result.Take(limit.Value).ToList();
-
-            _logger.LogInformation($"[ChromaPythonService.ListCollectionsAsync] returning result");
-            return result;
+            catch (PythonException ex)
+            {
+                _logger.LogError($"Failed to list collections - Python error: {ex.Message}");
+                return new List<string>(); // Return empty list on error
+            }
         }, timeoutMs: 30000, operationName: "ListCollections");
     }
 
@@ -153,30 +161,95 @@ public class ChromaPythonService : IChromaDbService, IDisposable
         
         _logger.LogInformation($"Attempting to create collection '{name}'; python context is running: {PythonContext.IsInitialized}");
         
-        return await PythonContext.ExecuteAsync(() =>
-        {
-            _logger.LogInformation($"Before PyObject");
-            dynamic client = ChromaClientPool.GetClient(_clientId);
-            PyObject? metadataObj = null;
-            
-            if (metadata != null && metadata.Count > 0)
-            {
-                metadataObj = ConvertDictionaryToPyDict(metadata);
-            }
+        
+        // Apply retry logic with exponential backoff for CreateCollection operations
+        // This addresses Python.NET deadlock issues similar to those fixed in PP13-52-C2
+        const int maxRetries = 3;
+        int[] retryDelays = { 100, 500, 1000 }; // Exponential backoff delays in ms
 
-            _logger.LogInformation($"Attempting to create collection within Python '{name}'");
-            if (metadataObj != null)
+        for (int attempt = 0; attempt < maxRetries; attempt++)
+        {
+            try
             {
-                client.create_collection(name: name, metadata: metadataObj);
+                // Use shorter timeout for each attempt to detect deadlock quickly
+                int attemptTimeout = attempt == maxRetries - 1 ? 15000 : 5000; // Last attempt gets longer timeout
+                
+                _logger.LogInformation($"CreateCollection attempt {attempt + 1}/{maxRetries} for collection '{name}' with timeout {attemptTimeout}ms");
+                
+                var result = await PythonContext.ExecuteAsync(() =>
+                {
+                    
+                    _logger.LogInformation($"Before PyObject");
+                    dynamic client = ChromaClientPool.GetClient(_clientId);
+                    PyObject? metadataObj = null;
+
+                    if (metadata != null && metadata.Count > 0)
+                    {
+                        metadataObj = ConvertDictionaryToPyDict(metadata);
+                    }
+
+                    _logger.LogInformation($"Attempting to create collection within Python '{name}', with metadata: {(metadataObj != null)}, client exists: {(client != null)}");
+                if (metadataObj != null)
+                {
+                        try
+                        {
+                            client!.create_collection(name: name, metadata: metadataObj);
+                        }
+                        catch (PythonException ex)
+                        {
+                            _logger.LogError($"Failed to create collection '{name}' with metadata - with error: " + ex.Message);
+                            // Re-throw to be caught outside the Python context
+                            throw;
+                        }
+                    }
+                else
+                {
+                    try
+                    {
+                        client!.create_collection(name: name);
+                    }
+                    catch (PythonException ex)
+                    {
+                        _logger.LogError($"Failed to create collection '{name}' - with error: " + ex.Message);
+                        // Re-throw to be caught outside the Python context
+                        throw;
+                    }
+                 }
+
+                    _logger.LogInformation($"Created collection '{name}'");
+                    return true;
+
+                }, timeoutMs: attemptTimeout, operationName: $"CreateCollection_{name}_Attempt{attempt + 1}");
+                
+                //var result = true;
+                // Success - return immediately
+                return result;
             }
-            else
+            catch (PythonException)
             {
-                client.create_collection(name: name);
+                // Re-throw PythonException immediately without retry
+                // This is expected behavior for duplicate collections
+                throw;
             }
-            
-            _logger.LogInformation($"Created collection '{name}'");
-            return true;
-        }, timeoutMs: 30000, operationName: $"CreateCollection_{name}");
+            catch (TimeoutException ex) when (attempt < maxRetries - 1)
+            {
+                // Log the timeout and retry
+                _logger.LogWarning($"CreateCollection attempt {attempt + 1} timed out for collection '{name}': {ex.Message}. Retrying after {retryDelays[attempt]}ms...");
+                await Task.Delay(retryDelays[attempt]);
+
+                // Force a small GC collection to help clear any Python.NET state
+                GC.Collect(0, GCCollectionMode.Optimized);
+            }
+            catch (Exception ex) when (attempt < maxRetries - 1 && ex.Message.Contains("deadlock", StringComparison.OrdinalIgnoreCase))
+            {
+                // Handle potential deadlock-related exceptions
+                _logger.LogWarning($"CreateCollection attempt {attempt + 1} encountered potential deadlock for collection '{name}': {ex.Message}. Retrying after {retryDelays[attempt]}ms...");
+                await Task.Delay(retryDelays[attempt]);
+            }
+        }
+
+        // If we get here, all retries failed - throw the last exception
+        throw new InvalidOperationException($"Failed to create collection '{name}' after {maxRetries} attempts due to repeated timeouts or deadlocks");
     }
 
     /// <summary>
@@ -188,17 +261,26 @@ public class ChromaPythonService : IChromaDbService, IDisposable
         
         return await PythonContext.ExecuteAsync(() =>
         {
-            dynamic client = ChromaClientPool.GetClient(_clientId);
-            dynamic collection = client.get_collection(name: name);
-            
-            var result = new Dictionary<string, object>
+            try
             {
-                ["name"] = name,
-                ["id"] = collection.id.ToString(),
-                ["metadata"] = ConvertPyDictToDictionary(collection.metadata)
-            };
-            
-            return (object?)result;
+                dynamic client = ChromaClientPool.GetClient(_clientId);
+                dynamic collection = client.get_collection(name: name);
+                
+                var result = new Dictionary<string, object>
+                {
+                    ["name"] = name,
+                    ["id"] = collection.id.ToString(),
+                    ["metadata"] = ConvertPyDictToDictionary(collection.metadata)
+                };
+                
+                return (object?)result;
+            }
+            catch (PythonException ex)
+            {
+                _logger.LogError($"Failed to get collection '{name}' - Python error: {ex.Message}");
+                // Re-throw PythonException for non-existent collections as this is expected behavior
+                throw;
+            }
         }, timeoutMs: 30000, operationName: $"GetCollection_{name}");
     }
 
@@ -211,10 +293,18 @@ public class ChromaPythonService : IChromaDbService, IDisposable
         
         return await PythonContext.ExecuteAsync(() =>
         {
-            dynamic client = ChromaClientPool.GetClient(_clientId);
-            client.delete_collection(name: name);
-            _logger.LogInformation($"Deleted collection '{name}'");
-            return true;
+            try
+            {
+                dynamic client = ChromaClientPool.GetClient(_clientId);
+                client.delete_collection(name: name);
+                _logger.LogInformation($"Deleted collection '{name}'");
+                return true;
+            }
+            catch (PythonException ex)
+            {
+                _logger.LogError($"Failed to delete collection '{name}' - Python error: {ex.Message}");
+                return false;
+            }
         }, timeoutMs: 30000, operationName: $"DeleteCollection_{name}");
     }
 
@@ -223,6 +313,7 @@ public class ChromaPythonService : IChromaDbService, IDisposable
     /// </summary>
     public async Task<bool> AddDocumentsAsync(string collectionName, List<string> documents, List<string> ids, List<Dictionary<string, object>>? metadatas = null, bool allowDuplicateIds = false)
     {
+        
         await EnsureClientInitializedAsync();
         
         // Check for duplicate IDs if not allowed (this can happen outside Python thread)
@@ -243,12 +334,22 @@ public class ChromaPythonService : IChromaDbService, IDisposable
                 }
             }
         }
-        
+
+
         return await PythonContext.ExecuteAsync(() =>
         {
             dynamic client = ChromaClientPool.GetClient(_clientId);
-            dynamic collection = client.get_or_create_collection(name: collectionName);
-            
+            dynamic collection = null;
+            try
+            {
+                collection = client.get_or_create_collection(name: collectionName);
+            }
+            catch (PythonException ex)
+            {
+                _logger.LogError($"Failed to get or create collection '{collectionName}': {ex.Message}");
+                return false;
+            }
+
             // Convert C# lists to Python lists
             PyObject pyIds = ConvertListToPyList(ids);
             PyObject pyDocuments = ConvertListToPyList(documents);
@@ -291,57 +392,71 @@ public class ChromaPythonService : IChromaDbService, IDisposable
         
         return await PythonContext.ExecuteAsync(() =>
         {
-            dynamic client = ChromaClientPool.GetClient(_clientId);
-            dynamic collection = client.get_collection(name: collectionName);
-            
-            PyObject pyQueryTexts = ConvertListToPyList(queryTexts);
-            PyObject? pyWhere = where != null ? ConvertDictionaryToPyDict(where) : null;
-            PyObject? pyWhereDocument = whereDocument != null ? ConvertDictionaryToPyDict(whereDocument) : null;
+            try
+            {
+                dynamic client = ChromaClientPool.GetClient(_clientId);
+                dynamic collection = client.get_collection(name: collectionName);
+                
+                PyObject pyQueryTexts = ConvertListToPyList(queryTexts);
+                PyObject? pyWhere = where != null ? ConvertDictionaryToPyDict(where) : null;
+                PyObject? pyWhereDocument = whereDocument != null ? ConvertDictionaryToPyDict(whereDocument) : null;
 
-            dynamic results;
-            if (pyWhere != null && pyWhereDocument != null)
-            {
-                results = collection.query(
-                    query_texts: pyQueryTexts,
-                    n_results: nResults,
-                    where: pyWhere,
-                    where_document: pyWhereDocument
-                );
-            }
-            else if (pyWhere != null)
-            {
-                results = collection.query(
-                    query_texts: pyQueryTexts,
-                    n_results: nResults,
-                    where: pyWhere
-                );
-            }
-            else if (pyWhereDocument != null)
-            {
-                results = collection.query(
-                    query_texts: pyQueryTexts,
-                    n_results: nResults,
-                    where_document: pyWhereDocument
-                );
-            }
-            else
-            {
-                results = collection.query(
-                    query_texts: pyQueryTexts,
-                    n_results: nResults
-                );
-            }
+                dynamic results;
+                if (pyWhere != null && pyWhereDocument != null)
+                {
+                    results = collection.query(
+                        query_texts: pyQueryTexts,
+                        n_results: nResults,
+                        where: pyWhere,
+                        where_document: pyWhereDocument
+                    );
+                }
+                else if (pyWhere != null)
+                {
+                    results = collection.query(
+                        query_texts: pyQueryTexts,
+                        n_results: nResults,
+                        where: pyWhere
+                    );
+                }
+                else if (pyWhereDocument != null)
+                {
+                    results = collection.query(
+                        query_texts: pyQueryTexts,
+                        n_results: nResults,
+                        where_document: pyWhereDocument
+                    );
+                }
+                else
+                {
+                    results = collection.query(
+                        query_texts: pyQueryTexts,
+                        n_results: nResults
+                    );
+                }
 
-            // Convert results to C# objects
-            var result = new Dictionary<string, object>
-            {
-                ["ids"] = ConvertPyListToList(results["ids"]),
-                ["documents"] = results["documents"] != null ? ConvertPyListToList(results["documents"]) : new List<object>(),
-                ["metadatas"] = results["metadatas"] != null ? ConvertPyListToMetadatasList(results["metadatas"]) : new List<object>(),
-                ["distances"] = ConvertPyListToList(results["distances"])
-            };
+                // Convert results to C# objects
+                var result = new Dictionary<string, object>
+                {
+                    ["ids"] = ConvertPyListToList(results["ids"]),
+                    ["documents"] = results["documents"] != null ? ConvertPyListToList(results["documents"]) : new List<object>(),
+                    ["metadatas"] = results["metadatas"] != null ? ConvertPyListToMetadatasList(results["metadatas"]) : new List<object>(),
+                    ["distances"] = ConvertPyListToList(results["distances"])
+                };
 
-            return (object?)result;
+                return (object?)result;
+            }
+            catch (PythonException ex)
+            {
+                _logger.LogError($"Failed to query documents in collection '{collectionName}' - Python error: {ex.Message}");
+                return new Dictionary<string, object>
+                {
+                    ["ids"] = new List<object>(),
+                    ["documents"] = new List<object>(),
+                    ["metadatas"] = new List<object>(),
+                    ["distances"] = new List<object>()
+                };
+            }
         }, timeoutMs: 60000, operationName: $"QueryDocuments_{collectionName}");
     }
 
@@ -352,58 +467,71 @@ public class ChromaPythonService : IChromaDbService, IDisposable
         Dictionary<string, object>? where = null, int? limit = null)
     {
         await EnsureClientInitializedAsync();
-        
+
         return await PythonContext.ExecuteAsync(() =>
         {
-            dynamic client = ChromaClientPool.GetClient(_clientId);
-            dynamic collection = client.get_collection(name: collectionName);
-            
-            PyObject? pyIds = ids != null && ids.Count > 0 ? ConvertListToPyList(ids) : null;
-            PyObject? pyWhere = where != null ? ConvertDictionaryToPyDict(where) : null;
+            try
+            {
+                dynamic client = ChromaClientPool.GetClient(_clientId);
+                dynamic collection = client.get_collection(name: collectionName);
+                
+                PyObject? pyIds = ids != null && ids.Count > 0 ? ConvertListToPyList(ids) : null;
+                PyObject? pyWhere = where != null ? ConvertDictionaryToPyDict(where) : null;
 
-            dynamic results;
-            if (pyIds != null && pyWhere != null && limit.HasValue)
-            {
-                results = collection.get(ids: pyIds, where: pyWhere, limit: limit.Value);
-            }
-            else if (pyIds != null && pyWhere != null)
-            {
-                results = collection.get(ids: pyIds, where: pyWhere);
-            }
-            else if (pyIds != null && limit.HasValue)
-            {
-                results = collection.get(ids: pyIds, limit: limit.Value);
-            }
-            else if (pyWhere != null && limit.HasValue)
-            {
-                results = collection.get(where: pyWhere, limit: limit.Value);
-            }
-            else if (pyIds != null)
-            {
-                results = collection.get(ids: pyIds);
-            }
-            else if (pyWhere != null)
-            {
-                results = collection.get(where: pyWhere);
-            }
-            else if (limit.HasValue)
-            {
-                results = collection.get(limit: limit.Value);
-            }
-            else
-            {
-                results = collection.get();
-            }
+                dynamic results;
+                if (pyIds != null && pyWhere != null && limit.HasValue)
+                {
+                    results = collection.get(ids: pyIds, where: pyWhere, limit: limit.Value);
+                }
+                else if (pyIds != null && pyWhere != null)
+                {
+                    results = collection.get(ids: pyIds, where: pyWhere);
+                }
+                else if (pyIds != null && limit.HasValue)
+                {
+                    results = collection.get(ids: pyIds, limit: limit.Value);
+                }
+                else if (pyWhere != null && limit.HasValue)
+                {
+                    results = collection.get(where: pyWhere, limit: limit.Value);
+                }
+                else if (pyIds != null)
+                {
+                    results = collection.get(ids: pyIds);
+                }
+                else if (pyWhere != null)
+                {
+                    results = collection.get(where: pyWhere);
+                }
+                else if (limit.HasValue)
+                {
+                    results = collection.get(limit: limit.Value);
+                }
+                else
+                {
+                    results = collection.get();
+                }
+                
+                // Convert results to C# objects
+                var result = new Dictionary<string, object>
+                {
+                    ["ids"] = ConvertPyListToList(results["ids"]),
+                    ["documents"] = results["documents"] != null ? ConvertPyListToList(results["documents"]) : new List<object>(),
+                    ["metadatas"] = results["metadatas"] != null ? ConvertPyListToMetadatasList(results["metadatas"]) : new List<object>()
+                };
 
-            // Convert results to C# objects
-            var result = new Dictionary<string, object>
+                return (object?)result;
+            }
+            catch (PythonException ex)
             {
-                ["ids"] = ConvertPyListToList(results["ids"]),
-                ["documents"] = results["documents"] != null ? ConvertPyListToList(results["documents"]) : new List<object>(),
-                ["metadatas"] = results["metadatas"] != null ? ConvertPyListToMetadatasList(results["metadatas"]) : new List<object>()
-            };
-
-            return (object?)result;
+                _logger.LogError($"Failed to get documents from collection '{collectionName}' - Python error: {ex.Message}");
+                return new Dictionary<string, object>
+                {
+                    ["ids"] = new List<object>(),
+                    ["documents"] = new List<object>(),
+                    ["metadatas"] = new List<object>()
+                };
+            }
         }, timeoutMs: 60000, operationName: $"GetDocuments_{collectionName}");
     }
 
@@ -422,28 +550,36 @@ public class ChromaPythonService : IChromaDbService, IDisposable
         
         return await PythonContext.ExecuteAsync(() =>
         {
-            dynamic client = ChromaClientPool.GetClient(_clientId);
-            dynamic collection = client.get_collection(name: collectionName);
-            
-            PyObject pyIds = ConvertListToPyList(ids);
-            PyObject? pyDocuments = documents != null ? ConvertListToPyList(documents) : null;
-            PyObject? pyMetadatas = metadatas != null ? ConvertMetadatasToPyList(metadatas) : null;
+            try
+            {
+                dynamic client = ChromaClientPool.GetClient(_clientId);
+                dynamic collection = client.get_collection(name: collectionName);
+                
+                PyObject pyIds = ConvertListToPyList(ids);
+                PyObject? pyDocuments = documents != null ? ConvertListToPyList(documents) : null;
+                PyObject? pyMetadatas = metadatas != null ? ConvertMetadatasToPyList(metadatas) : null;
 
-            if (pyDocuments != null && pyMetadatas != null)
-            {
-                collection.update(ids: pyIds, documents: pyDocuments, metadatas: pyMetadatas);
-            }
-            else if (pyDocuments != null)
-            {
-                collection.update(ids: pyIds, documents: pyDocuments);
-            }
-            else if (pyMetadatas != null)
-            {
-                collection.update(ids: pyIds, metadatas: pyMetadatas);
-            }
+                if (pyDocuments != null && pyMetadatas != null)
+                {
+                    collection.update(ids: pyIds, documents: pyDocuments, metadatas: pyMetadatas);
+                }
+                else if (pyDocuments != null)
+                {
+                    collection.update(ids: pyIds, documents: pyDocuments);
+                }
+                else if (pyMetadatas != null)
+                {
+                    collection.update(ids: pyIds, metadatas: pyMetadatas);
+                }
 
-            _logger.LogInformation($"Updated {ids.Count} documents in collection '{collectionName}'");
-            return true;
+                _logger.LogInformation($"Updated {ids.Count} documents in collection '{collectionName}'");
+                return true;
+            }
+            catch (PythonException ex)
+            {
+                _logger.LogError($"Failed to update documents in collection '{collectionName}' - Python error: {ex.Message}");
+                return false;
+            }
         }, timeoutMs: 60000, operationName: $"UpdateDocuments_{collectionName}");
     }
 
@@ -456,13 +592,21 @@ public class ChromaPythonService : IChromaDbService, IDisposable
         
         return await PythonContext.ExecuteAsync(() =>
         {
-            dynamic client = ChromaClientPool.GetClient(_clientId);
-            dynamic collection = client.get_collection(name: collectionName);
-            PyObject pyIds = ConvertListToPyList(ids);
-            collection.delete(ids: pyIds);
-            
-            _logger.LogInformation($"Deleted {ids.Count} documents from collection '{collectionName}'");
-            return true;
+            try
+            {
+                dynamic client = ChromaClientPool.GetClient(_clientId);
+                dynamic collection = client.get_collection(name: collectionName);
+                PyObject pyIds = ConvertListToPyList(ids);
+                collection.delete(ids: pyIds);
+                
+                _logger.LogInformation($"Deleted {ids.Count} documents from collection '{collectionName}'");
+                return true;
+            }
+            catch (PythonException ex)
+            {
+                _logger.LogError($"Failed to delete documents from collection '{collectionName}' - Python error: {ex.Message}");
+                return false;
+            }
         }, timeoutMs: 30000, operationName: $"DeleteDocuments_{collectionName}");
     }
 
@@ -475,10 +619,18 @@ public class ChromaPythonService : IChromaDbService, IDisposable
         
         return await PythonContext.ExecuteAsync(() =>
         {
-            dynamic client = ChromaClientPool.GetClient(_clientId);
-            dynamic collection = client.get_collection(name: collectionName);
-            int count = collection.count();
-            return count;
+            try
+            {
+                dynamic client = ChromaClientPool.GetClient(_clientId);
+                dynamic collection = client.get_collection(name: collectionName);
+                int count = collection.count();
+                return count;
+            }
+            catch (PythonException ex)
+            {
+                _logger.LogError($"Failed to get collection count for '{collectionName}' - Python error: {ex.Message}");
+                return 0; // Return 0 on error
+            }
         }, timeoutMs: 30000, operationName: $"GetCollectionCount_{collectionName}");
     }
 

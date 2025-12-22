@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text.Json;
+using System.Threading;
 using System.Threading.Tasks;
 using DMMS.Models;
 using Microsoft.Extensions.Logging;
@@ -116,10 +117,86 @@ namespace DMMS.Services
         {
             try
             {
-                var collections = await _chromaService.ListCollectionsAsync();
-                var currentCollection = collections.FirstOrDefault() ?? "default";
+                // Log Python.NET queue state before starting operation
+                var queueStats = PythonContext.GetQueueStats();
+                _logger.LogInformation(
+                    "GetLocalChangesAsync starting - Python.NET queue size: {QueueSize}, over threshold: {OverThreshold}",
+                    queueStats.QueueSize, queueStats.IsOverThreshold);
                 
-                return await _chromaToDoltDetector.DetectLocalChangesAsync(currentCollection);
+                var collections = await _chromaService.ListCollectionsAsync();
+                
+                if (!collections.Any())
+                {
+                    _logger.LogInformation("No collections found, checking default collection");
+                    return await _chromaToDoltDetector.DetectLocalChangesAsync("default");
+                }
+                
+                if (collections.Count == 1)
+                {
+                    _logger.LogInformation("Single collection found: {Collection}", collections[0]);
+                    return await _chromaToDoltDetector.DetectLocalChangesAsync(collections[0]);
+                }
+                
+                // Multiple collections - use async batching to prevent Python.NET queue saturation
+                _logger.LogInformation("Multiple collections found ({Count}), using async batch processing to prevent queue saturation", 
+                    collections.Count);
+                
+                // Create collection check tasks with proper async isolation
+                var collectionCheckTasks = collections.Select(collectionName => 
+                    Task.Run(async () => 
+                    {
+                        try 
+                        {
+                            return await _chromaToDoltDetector.DetectLocalChangesAsync(collectionName);
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.LogWarning(ex, "Failed to detect changes in collection {Collection}, skipping", collectionName);
+                            return new LocalChanges(
+                                new List<ChromaDocument>(), 
+                                new List<ChromaDocument>(), 
+                                new List<DeletedDocumentV2>());
+                        }
+                    })
+                ).ToList();
+                
+                // Execute all collection checks with timeout handling
+                var timeoutCts = new CancellationTokenSource(TimeSpan.FromMilliseconds(45000));
+                
+                try
+                {
+                    var results = await Task.WhenAll(collectionCheckTasks).WaitAsync(timeoutCts.Token);
+                    _logger.LogInformation("Successfully completed async batch processing for {Count} collections", collections.Count);
+                
+                    // Aggregate all changes from all collections
+                    var allNewDocs = new List<ChromaDocument>();
+                    var allModifiedDocs = new List<ChromaDocument>();
+                    var allDeletedDocs = new List<DeletedDocumentV2>();
+                    
+                    foreach (var collectionChanges in results)
+                    {
+                        allNewDocs.AddRange(collectionChanges.NewDocuments);
+                        allModifiedDocs.AddRange(collectionChanges.ModifiedDocuments);
+                        allDeletedDocs.AddRange(collectionChanges.DeletedDocuments);
+                    }
+                    
+                    var totalChanges = allNewDocs.Count + allModifiedDocs.Count + allDeletedDocs.Count;
+                    _logger.LogInformation(
+                        "GetLocalChangesAsync completed - found {TotalChanges} changes across {Collections} collections ({New} new, {Modified} modified, {Deleted} deleted)",
+                        totalChanges, collections.Count, allNewDocs.Count, allModifiedDocs.Count, allDeletedDocs.Count);
+                    
+                    return new LocalChanges(allNewDocs, allModifiedDocs, allDeletedDocs);
+                }
+                catch (OperationCanceledException ex) when (timeoutCts.Token.IsCancellationRequested)
+                {
+                    _logger.LogError(ex, "GetLocalChangesAsync timed out after 45 seconds for {Count} collections", collections.Count);
+                    throw new TimeoutException($"GetLocalChangesAsync timed out after 45 seconds for {collections.Count} collections", ex);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "GetLocalChangesAsync failed during batch processing for {Count} collections", collections.Count);
+                    throw;
+                }
             }
             catch (Exception ex)
             {

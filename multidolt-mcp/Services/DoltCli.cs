@@ -712,37 +712,175 @@ namespace DMMS.Services
 
         // ==================== SQL Operations ====================
 
+        /// <summary>
+        /// Detects if a SQL statement is a DDL (Data Definition Language) operation
+        /// that typically doesn't return row data.
+        /// </summary>
+        /// <param name="sql">SQL statement to analyze</param>
+        /// <returns>True if the statement is DDL, false otherwise</returns>
+        private bool IsDdlStatement(string sql)
+        {
+            if (string.IsNullOrWhiteSpace(sql))
+                return false;
+
+            var trimmedSql = sql.Trim().ToUpperInvariant();
+            
+            // Common DDL keywords that don't return data rows
+            var ddlKeywords = new[]
+            {
+                "CREATE TABLE", "CREATE INDEX", "CREATE VIEW", "CREATE TRIGGER", "CREATE PROCEDURE",
+                "DROP TABLE", "DROP INDEX", "DROP VIEW", "DROP TRIGGER", "DROP PROCEDURE",
+                "ALTER TABLE", "ALTER INDEX", "ALTER VIEW",
+                "RENAME TABLE",
+                "TRUNCATE TABLE"
+            };
+
+            return ddlKeywords.Any(keyword => trimmedSql.StartsWith(keyword));
+        }
+
+        /// <summary>
+        /// Suggests the appropriate method to use based on SQL statement type.
+        /// </summary>
+        /// <param name="sql">SQL statement to analyze</param>
+        /// <returns>Suggested method name and description</returns>
+        private string GetSuggestedMethod(string sql)
+        {
+            if (string.IsNullOrWhiteSpace(sql))
+                return "ExecuteAsync() for general SQL operations";
+
+            var trimmedSql = sql.Trim().ToUpperInvariant();
+            
+            if (IsDdlStatement(sql))
+                return "ExecuteAsync() for DDL statements (CREATE, DROP, ALTER, etc.)";
+            
+            if (trimmedSql.StartsWith("SELECT"))
+            {
+                // Check if it's a scalar query (single value)
+                if (trimmedSql.Contains("COUNT(") || trimmedSql.Contains("MAX(") || 
+                    trimmedSql.Contains("MIN(") || trimmedSql.Contains("SUM(") || 
+                    trimmedSql.Contains("AVG(") || trimmedSql.Contains(" LIMIT 1"))
+                {
+                    return "ExecuteScalarAsync<T>() for single-value queries, or QueryAsync<T>() for row data";
+                }
+                return "QueryAsync<T>() for SELECT statements returning multiple rows";
+            }
+            
+            if (trimmedSql.StartsWith("INSERT") || trimmedSql.StartsWith("UPDATE") || 
+                trimmedSql.StartsWith("DELETE") || trimmedSql.StartsWith("REPLACE"))
+            {
+                return "ExecuteAsync() for DML statements (INSERT, UPDATE, DELETE, etc.)";
+            }
+            
+            return "ExecuteAsync() for general SQL operations";
+        }
+
         public async Task<string> QueryJsonAsync(string sql)
         {
             return await ExecuteSqlJsonAsync(sql);
         }
 
+        /// <summary>
+        /// Executes a SQL query and returns the results as typed objects.
+        /// 
+        /// IMPORTANT: Use this method for SELECT statements that return row data.
+        /// For DDL operations (CREATE, DROP, ALTER) use ExecuteAsync() instead.
+        /// For single-value queries, consider using ExecuteScalarAsync&lt;T&gt;().
+        /// 
+        /// This method handles empty responses gracefully and provides guidance
+        /// when inappropriate SQL statement types are detected.
+        /// </summary>
+        /// <typeparam name="T">The type to deserialize each row into</typeparam>
+        /// <param name="sql">SQL SELECT statement</param>
+        /// <returns>Collection of typed objects representing the query results</returns>
+        /// <exception cref="DoltException">When SQL execution fails</exception>
+        /// <exception cref="InvalidOperationException">When used with inappropriate SQL statements</exception>
         public async Task<IEnumerable<T>> QueryAsync<T>(string sql) where T : new()
         {
+            // Detect potential misuse and provide guidance
+            if (IsDdlStatement(sql))
+            {
+                var suggestion = GetSuggestedMethod(sql);
+                _logger?.LogWarning("QueryAsync<T>() called with DDL statement. Consider using {Suggestion}", suggestion);
+                throw new InvalidOperationException(
+                    $"QueryAsync<T>() is designed for SELECT statements that return row data. " +
+                    $"For DDL statements like this one, use {suggestion}. " +
+                    $"Statement: {sql.Substring(0, Math.Min(50, sql.Length))}...");
+            }
+
             var json = await ExecuteSqlJsonAsync(sql);
             var results = new List<T>();
             
-            using var doc = JsonDocument.Parse(json);
-            if (doc.RootElement.TryGetProperty("rows", out var rows))
+            // Handle empty responses (common for DDL statements or empty result sets)
+            if (string.IsNullOrWhiteSpace(json))
             {
-                foreach (var row in rows.EnumerateArray())
+                _logger?.LogDebug("SQL command returned no output. Statement: {SqlPreview}", 
+                    sql.Substring(0, Math.Min(100, sql.Length)));
+                
+                // For DDL statements that somehow got through, provide guidance
+                if (IsDdlStatement(sql))
                 {
-                    var jsonString = row.GetRawText();
-                    var obj = JsonSerializer.Deserialize<T>(jsonString, _jsonOptions);
-                    if (obj != null)
-                        results.Add(obj);
+                    var suggestion = GetSuggestedMethod(sql);
+                    throw new InvalidOperationException(
+                        $"DDL statement returned no output as expected. Use {suggestion} instead. " +
+                        $"Statement: {sql.Substring(0, Math.Min(50, sql.Length))}...");
                 }
+                
+                // For other statements (like SELECT with no results), return empty list
+                return results;
             }
 
-            return results;
+            try
+            {
+                using var doc = JsonDocument.Parse(json);
+                if (doc.RootElement.TryGetProperty("rows", out var rows))
+                {
+                    foreach (var row in rows.EnumerateArray())
+                    {
+                        var jsonString = row.GetRawText();
+                        var obj = JsonSerializer.Deserialize<T>(jsonString, _jsonOptions);
+                        if (obj != null)
+                            results.Add(obj);
+                    }
+                }
+
+                return results;
+            }
+            catch (JsonException ex) when (string.IsNullOrWhiteSpace(json))
+            {
+                // This catch block handles the original issue: empty JSON causing parse errors
+                _logger?.LogWarning("Empty or invalid JSON response for SQL statement. " +
+                    "This often indicates a DDL statement was used with QueryAsync<T>(). " +
+                    "Statement: {SqlPreview}", sql.Substring(0, Math.Min(100, sql.Length)));
+                
+                var suggestion = GetSuggestedMethod(sql);
+                throw new InvalidOperationException(
+                    $"Received empty or invalid JSON response. This typically happens when using " +
+                    $"QueryAsync<T>() with DDL statements. Use {suggestion} instead. " +
+                    $"Original error: {ex.Message}", ex);
+            }
         }
 
         /// <summary>
+        /// Executes SQL statements that don't return row data (DDL, DML operations).
+        /// 
+        /// RECOMMENDED FOR:
+        /// - DDL operations: CREATE TABLE, DROP TABLE, ALTER TABLE, etc.
+        /// - DML operations: INSERT, UPDATE, DELETE, etc.
+        /// - Administrative commands: TRUNCATE, GRANT, REVOKE, etc.
+        /// 
+        /// RETURNS: Number of affected rows (when available) or 1 for successful DDL operations.
+        /// 
+        /// For SELECT statements that return data, use QueryAsync&lt;T&gt;() instead.
+        /// For single-value SELECT queries, consider ExecuteScalarAsync&lt;T&gt;().
+        /// 
         /// Implementation Note: Dolt CLI doesn't always return affected row counts for DML operations.
         /// This method first tries to parse MySQL-style "X rows affected" output, then falls back
         /// to heuristic analysis: if the SQL contains INSERT/UPDATE/DELETE and succeeds, assumes 1+ rows affected.
         /// This is a conservative estimate to maintain compatibility with standard SQL expectations.
         /// </summary>
+        /// <param name="sql">SQL statement to execute (DDL or DML)</param>
+        /// <returns>Number of affected rows, or 1 for successful DDL operations</returns>
+        /// <exception cref="DoltException">When SQL execution fails</exception>
         public async Task<int> ExecuteAsync(string sql)
         {
             var result = await ExecuteDoltCommandAsync("sql", "-q", sql);
@@ -769,6 +907,23 @@ namespace DMMS.Services
             return 0;
         }
 
+        /// <summary>
+        /// Executes a SQL query that returns a single scalar value.
+        /// 
+        /// RECOMMENDED FOR:
+        /// - Aggregate functions: COUNT(*), MAX(id), MIN(date), SUM(amount), AVG(score)
+        /// - Single-value queries: SELECT active_branch(), SELECT DOLT_HASHOF('HEAD')
+        /// - Existence checks: SELECT COUNT(*) FROM table WHERE condition
+        /// - Queries with LIMIT 1 that return a single value
+        /// 
+        /// For queries returning multiple rows, use QueryAsync&lt;T&gt;() instead.
+        /// For DDL/DML statements, use ExecuteAsync() instead.
+        /// </summary>
+        /// <typeparam name="T">The type of the scalar value to return</typeparam>
+        /// <param name="sql">SQL SELECT statement that returns a single value</param>
+        /// <returns>The scalar value from the first column of the first row</returns>
+        /// <exception cref="DoltException">When SQL execution fails</exception>
+        /// <exception cref="InvalidOperationException">When no value is returned</exception>
         public async Task<T> ExecuteScalarAsync<T>(string sql)
         {
             var json = await ExecuteSqlJsonAsync(sql);

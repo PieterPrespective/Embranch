@@ -76,7 +76,7 @@ namespace DMMS.Services
             }
 
             // Pattern 3: Normal push with commit range - "   abc1234..def5678  main -> main"
-            var commitRangeMatch = Regex.Match(output, @"\s+([a-zA-Z0-9]+)\.\.([a-zA-Z0-9]+)\s+(\S+)\s+->\s+(\S+)", RegexOptions.Multiline);
+            var commitRangeMatch = Regex.Match(output, @"\s*([a-zA-Z0-9]+)\.\.([a-zA-Z0-9]+)\s+(\S+)\s+->\s+(\S+)", RegexOptions.Multiline);
             if (commitRangeMatch.Success)
             {
                 var fromCommit = commitRangeMatch.Groups[1].Value;

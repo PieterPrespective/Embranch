@@ -144,7 +144,7 @@ namespace DMMSTesting.IntegrationTests
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
                 )";
-            await _userA.DoltCli.QueryAsync<dynamic>(createTableSql);
+            await _userA.DoltCli.ExecuteAsync(createTableSql);
             
             // Initial commit
             await _userA.DoltCli.AddAllAsync();
@@ -210,17 +210,22 @@ namespace DMMSTesting.IntegrationTests
             var documents = await _userA.ChromaService.GetDocumentsAsync(COLLECTION_NAME);
             Assert.That(documents, Is.Not.Null, "Should have documents in the collection");
             
-            // Cast to dynamic to access Documents property
-            var documentsResponse = documents as dynamic;
-            if (documentsResponse != null && documentsResponse.documents != null)
+            // Cast to Dictionary to access documents property
+            if (documents is Dictionary<string, object> documentsResponse)
             {
-                var docList = documentsResponse.documents as IList;
-                Assert.That(docList, Is.Not.Null.And.Count.GreaterThan(0), 
-                    "Should have at least one document in ChromaDB");
+                if (documentsResponse.TryGetValue("documents", out var documentsObj) && documentsObj is IList docList)
+                {
+                    Assert.That(docList, Is.Not.Null.And.Count.GreaterThan(0), 
+                        "Should have at least one document in ChromaDB");
+                }
+                else
+                {
+                    Assert.Fail("Documents response does not contain expected documents list");
+                }
             }
             else
             {
-                Assert.Fail("Documents response does not contain expected documents property");
+                Assert.Fail("Documents response is not in expected Dictionary format");
             }
             
             _logger!.LogInformation("✅ FullSync successfully recreated collection and synced documents");
