@@ -4,6 +4,7 @@ using ModelContextProtocol.Server;
 using System.ComponentModel;
 using DMMS.Services;
 using DMMS.Models;
+using DMMS.Utilities;
 
 namespace DMMS.Tools;
 
@@ -38,14 +39,30 @@ public class DoltCloneTool
     [Description("Clone an existing Dolt repository from DoltHub or another remote. This downloads the repository and populates the local ChromaDB with the documents from the specified branch/commit.")]
     public virtual async Task<object> DoltClone(string remote_url, string? branch = null, string? commit = null)
     {
+        const string toolName = nameof(DoltCloneTool);
+        const string methodName = nameof(DoltClone);
+        ToolLoggingUtility.LogToolStart(_logger, toolName, methodName, $"remote_url: {remote_url}, branch: {branch}, commit: {commit}");
+
         try
         {
-            _logger.LogInformation($"[DoltCloneTool.DoltClone] Cloning from: {remote_url}, branch={branch}, commit={commit}");
+            if (string.IsNullOrWhiteSpace(remote_url))
+            {
+                ToolLoggingUtility.LogToolFailure(_logger, toolName, methodName, "Remote URL is required");
+                return new
+                {
+                    success = false,
+                    error = "REMOTE_URL_REQUIRED",
+                    message = "Remote URL is required for clone operation"
+                };
+            }
+
+            ToolLoggingUtility.LogToolInfo(_logger, toolName, $"Cloning from: {remote_url}, branch={branch}, commit={commit}");
 
             // First check if Dolt is available
             var doltCheck = await _doltCli.CheckDoltAvailableAsync();
             if (!doltCheck.Success)
             {
+                ToolLoggingUtility.LogToolFailure(_logger, toolName, methodName, doltCheck.Error ?? "Dolt executable not found");
                 return new
                 {
                     success = false,
@@ -58,6 +75,7 @@ public class DoltCloneTool
             var isInitialized = await _doltCli.IsInitializedAsync();
             if (isInitialized)
             {
+                ToolLoggingUtility.LogToolFailure(_logger, toolName, methodName, "Repository already exists. Use dolt_reset or manual cleanup.");
                 return new
                 {
                     success = false,
@@ -94,14 +112,14 @@ public class DoltCloneTool
                 {
                     // Assume it's a DoltHub org/repo format
                     formattedUrl = $"https://doltremoteapi.dolthub.com/{remote_url}";
-                    _logger.LogInformation($"[DoltCloneTool.DoltClone] Formatted DoltHub repo '{remote_url}' to '{formattedUrl}'");
+                    ToolLoggingUtility.LogToolInfo(_logger, toolName, $"Formatted DoltHub repo '{remote_url}' to '{formattedUrl}'");
                 }
             }
 
             // PP13-56-C1: Removed pre-clone URL validation that creates temporary test directories
             // This test code was running in production and causing file locking issues
             // URL validation will now happen during actual clone operation
-            _logger.LogInformation($"[DoltCloneTool.DoltClone] Starting clone operation for: '{formattedUrl}'");
+            ToolLoggingUtility.LogToolInfo(_logger, toolName, $"Starting clone operation for: '{formattedUrl}'");
 
             // Clone the repository and check for success
             // IMPORTANT: Pass "." to clone into the current directory (_repositoryPath), not a subdirectory
@@ -568,6 +586,13 @@ public class DoltCloneTool
                 _logger.LogError(ex, "Failed to sync to ChromaDB after clone");
             }
 
+            string successMessage = !isCloneSuccessful 
+                ? $"Repository was empty at '{formattedUrl}'. Initialized local repository with initial commits and configured remote 'origin'. Repository is now ready for use."
+                : syncSucceeded
+                    ? $"Successfully cloned repository from '{formattedUrl}' and synced {documentsLoaded} documents to ChromaDB"
+                    : $"Successfully cloned repository from '{formattedUrl}' but failed to sync to ChromaDB: {syncError}. Documents can be manually synced later.";
+
+            ToolLoggingUtility.LogToolSuccess(_logger, toolName, methodName, successMessage);
             return new
             {
                 success = true,
@@ -604,8 +629,6 @@ public class DoltCloneTool
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, $"Error cloning repository from '{remote_url}'");
-            
             // Determine error type
             string errorCode = "OPERATION_FAILED";
             if (ex.Message.Contains("authentication", StringComparison.OrdinalIgnoreCase))
@@ -613,6 +636,7 @@ public class DoltCloneTool
             else if (ex.Message.Contains("not found", StringComparison.OrdinalIgnoreCase))
                 errorCode = "REMOTE_NOT_FOUND";
             
+            ToolLoggingUtility.LogToolException(_logger, toolName, methodName, ex);
             return new
             {
                 success = false,

@@ -2,6 +2,7 @@ using Microsoft.Extensions.Logging;
 using ModelContextProtocol.Server;
 using System.ComponentModel;
 using DMMS.Services;
+using DMMS.Utilities;
 
 namespace DMMS.Tools;
 
@@ -35,14 +36,19 @@ public class DoltCommitsTool
         string? since = null,
         string? until = null)
     {
+        const string toolName = nameof(DoltCommitsTool);
+        const string methodName = nameof(DoltCommits);
+        ToolLoggingUtility.LogToolStart(_logger, toolName, methodName, $"branch: {branch}, limit: {limit}, offset: {offset}, since: {since}, until: {until}");
+
         try
         {
-            _logger.LogInformation($"[DoltCommitsTool.DoltCommits] Listing commits on branch={branch}, limit={limit}, offset={offset}");
+            ToolLoggingUtility.LogToolInfo(_logger, toolName, $"Listing commits on branch={branch}, limit={limit}, offset={offset}");
 
             // First check if Dolt is available
             var doltCheck = await _doltCli.CheckDoltAvailableAsync();
             if (!doltCheck.Success)
             {
+                ToolLoggingUtility.LogToolFailure(_logger, toolName, methodName, doltCheck.Error ?? "Dolt executable not found");
                 return new
                 {
                     success = false,
@@ -55,6 +61,7 @@ public class DoltCommitsTool
             var isInitialized = await _doltCli.IsInitializedAsync();
             if (!isInitialized)
             {
+                ToolLoggingUtility.LogToolFailure(_logger, toolName, methodName, "No Dolt repository configured. Use dolt_init or dolt_clone first.");
                 return new
                 {
                     success = false,
@@ -122,6 +129,7 @@ public class DoltCommitsTool
 
             var hasMore = commits != null && commits.Count() == limit;
 
+            ToolLoggingUtility.LogToolSuccess(_logger, toolName, methodName, $"Found {formattedCommits.Count} commits on branch '{branch}'");
             return new
             {
                 success = true,
@@ -134,7 +142,7 @@ public class DoltCommitsTool
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error listing commits");
+            ToolLoggingUtility.LogToolException(_logger, toolName, methodName, ex);
             return new
             {
                 success = false,

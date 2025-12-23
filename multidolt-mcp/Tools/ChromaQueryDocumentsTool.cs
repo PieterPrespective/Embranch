@@ -3,6 +3,7 @@ using ModelContextProtocol.Server;
 using System.ComponentModel;
 using System.Text.Json;
 using DMMS.Services;
+using DMMS.Utilities;
 
 namespace DMMS.Tools;
 
@@ -32,27 +33,36 @@ public class ChromaQueryDocumentsTool
     public virtual async Task<object> QueryDocuments(string collectionName, string queryTextsJson, int nResults = 5, 
         string? whereJson = null, string? whereDocumentJson = null)
     {
+        const string toolName = nameof(ChromaQueryDocumentsTool);
+        const string methodName = nameof(QueryDocuments);
+        
         try
         {
+            ToolLoggingUtility.LogToolStart(_logger, toolName, methodName, 
+                $"Collection: '{collectionName}', QueryTexts: {queryTextsJson?.Length ?? 0} chars, nResults: {nResults}");
             if (string.IsNullOrWhiteSpace(collectionName))
             {
+                const string error = "Collection name is required";
+                ToolLoggingUtility.LogToolFailure(_logger, toolName, methodName, error);
                 return new
                 {
                     success = false,
-                    error = "Collection name is required"
+                    error = error
                 };
             }
 
             if (string.IsNullOrWhiteSpace(queryTextsJson))
             {
+                const string error = "Query texts JSON is required";
+                ToolLoggingUtility.LogToolFailure(_logger, toolName, methodName, error);
                 return new
                 {
                     success = false,
-                    error = "Query texts JSON is required"
+                    error = error
                 };
             }
 
-            _logger.LogInformation($"Querying collection '{collectionName}'");
+            ToolLoggingUtility.LogToolInfo(_logger, toolName, $"Querying collection '{collectionName}'");
 
             List<string> queryTexts;
             Dictionary<string, object>? where = null;
@@ -74,28 +84,35 @@ public class ChromaQueryDocumentsTool
             }
             catch (JsonException ex)
             {
+                var error = $"Invalid JSON format: {ex.Message}";
+                ToolLoggingUtility.LogToolFailure(_logger, toolName, methodName, error);
                 return new
                 {
                     success = false,
-                    error = $"Invalid JSON format: {ex.Message}"
+                    error = error
                 };
             }
 
             if (queryTexts.Count == 0)
             {
+                const string error = "Query texts list cannot be empty";
+                ToolLoggingUtility.LogToolFailure(_logger, toolName, methodName, error);
                 return new
                 {
                     success = false,
-                    error = "Query texts list cannot be empty"
+                    error = error
                 };
             }
 
+            ToolLoggingUtility.LogToolInfo(_logger, toolName, $"Executing query with {queryTexts.Count} query texts, nResults={nResults}");
+            var startTime = DateTime.UtcNow;
             var result = await _chromaService.QueryDocumentsAsync(collectionName, queryTexts, nResults, where, whereDocument);
+            var duration = DateTime.UtcNow - startTime;
 
             // Cast to dictionary and extract values for proper JSON structure
             if (result is Dictionary<string, object> resultDict)
             {
-                return new
+                var response = new
                 {
                     ids = resultDict.TryGetValue("ids", out var ids) ? ids : null,
                     embeddings = resultDict.TryGetValue("embeddings", out var embeddings) ? embeddings : null,
@@ -106,17 +123,23 @@ public class ChromaQueryDocumentsTool
                     distances = resultDict.TryGetValue("distances", out var distances) ? distances : null,
                     included = new[] { "documents", "metadatas", "distances", "ids" }
                 };
+                
+                var resultMessage = $"Query completed in {duration.TotalMilliseconds:F1}ms with {queryTexts.Count} queries";
+                ToolLoggingUtility.LogToolSuccess(_logger, toolName, methodName, resultMessage);
+                return response;
             }
 
+            const string formatError = "Unexpected result format from query operation";
+            ToolLoggingUtility.LogToolFailure(_logger, toolName, methodName, formatError);
             return new
             {
                 success = false,
-                error = "Unexpected result format from query operation"
+                error = formatError
             };
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error querying documents");
+            ToolLoggingUtility.LogToolException(_logger, toolName, methodName, ex);
             return new
             {
                 success = false,

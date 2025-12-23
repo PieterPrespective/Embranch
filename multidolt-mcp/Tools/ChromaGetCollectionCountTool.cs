@@ -2,6 +2,7 @@ using Microsoft.Extensions.Logging;
 using ModelContextProtocol.Server;
 using System.ComponentModel;
 using DMMS.Services;
+using DMMS.Utilities;
 
 namespace DMMS.Tools;
 
@@ -30,10 +31,15 @@ public class ChromaGetCollectionCountTool
     [Description("Get the number of documents in a Chroma collection.")]
     public virtual async Task<object> GetCollectionCount(string collectionName)
     {
+        const string toolName = nameof(ChromaGetCollectionCountTool);
+        const string methodName = nameof(GetCollectionCount);
+        ToolLoggingUtility.LogToolStart(_logger, toolName, methodName, $"collectionName: {collectionName}");
+
         try
         {
             if (string.IsNullOrWhiteSpace(collectionName))
             {
+                ToolLoggingUtility.LogToolFailure(_logger, toolName, methodName, "Collection name is required");
                 return new
                 {
                     success = false,
@@ -41,10 +47,11 @@ public class ChromaGetCollectionCountTool
                 };
             }
 
-            _logger.LogInformation($"Getting document count for collection '{collectionName}'");
+            ToolLoggingUtility.LogToolInfo(_logger, toolName, $"Getting document count for collection '{collectionName}'");
 
             var count = await _chromaService.GetCollectionCountAsync(collectionName);
 
+            ToolLoggingUtility.LogToolSuccess(_logger, toolName, methodName, $"Retrieved count: {count} for collection '{collectionName}'");
             return new
             {
                 success = true,
@@ -53,7 +60,7 @@ public class ChromaGetCollectionCountTool
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error getting collection count");
+            ToolLoggingUtility.LogToolException(_logger, toolName, methodName, ex);
             return new
             {
                 success = false,

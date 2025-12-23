@@ -2,6 +2,7 @@ using Microsoft.Extensions.Logging;
 using ModelContextProtocol.Server;
 using System.ComponentModel;
 using DMMS.Services;
+using DMMS.Utilities;
 
 namespace DMMS.Tools;
 
@@ -30,14 +31,30 @@ public class ChromaModifyCollectionTool
     [Description("Update a collection's name or metadata. Note: Changing HNSW parameters after creation has no effect on existing data.")]
     public virtual async Task<object> ModifyCollection(string collection_name, string? new_name = null, Dictionary<string, object>? new_metadata = null)
     {
+        const string toolName = nameof(ChromaModifyCollectionTool);
+        const string methodName = nameof(ModifyCollection);
+        ToolLoggingUtility.LogToolStart(_logger, toolName, methodName, $"collection_name: {collection_name}, new_name: {new_name}, new_metadata: {new_metadata != null}");
+
         try
         {
-            _logger.LogInformation($"[ChromaModifyCollectionTool.ModifyCollection] Modifying collection: {collection_name}");
+            if (string.IsNullOrWhiteSpace(collection_name))
+            {
+                ToolLoggingUtility.LogToolFailure(_logger, toolName, methodName, "Collection name is required");
+                return new
+                {
+                    success = false,
+                    error = "COLLECTION_NAME_REQUIRED",
+                    message = "Collection name is required"
+                };
+            }
+
+            ToolLoggingUtility.LogToolInfo(_logger, toolName, $"Modifying collection: {collection_name}");
 
             // Check if collection exists
             var collection = await _chromaService.GetCollectionAsync(collection_name);
             if (collection == null)
             {
+                ToolLoggingUtility.LogToolFailure(_logger, toolName, methodName, $"Collection '{collection_name}' does not exist");
                 return new
                 {
                     success = false,
@@ -48,8 +65,9 @@ public class ChromaModifyCollectionTool
 
             // STUB: Backend method not yet implemented
             // TODO: Implement ModifyCollectionAsync in IChromaDbService
-            _logger.LogWarning("ChromaModifyCollectionTool: Backend method ModifyCollectionAsync not yet implemented");
+            ToolLoggingUtility.LogToolWarning(_logger, toolName, "Backend method ModifyCollectionAsync not yet implemented");
             
+            ToolLoggingUtility.LogToolFailure(_logger, toolName, methodName, "Collection modification is not yet implemented in the backend service");
             return new
             {
                 success = false,
@@ -82,7 +100,7 @@ public class ChromaModifyCollectionTool
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, $"Error modifying collection '{collection_name}'");
+            ToolLoggingUtility.LogToolException(_logger, toolName, methodName, ex);
             return new
             {
                 success = false,

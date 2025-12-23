@@ -2,6 +2,7 @@ using Microsoft.Extensions.Logging;
 using ModelContextProtocol.Server;
 using System.ComponentModel;
 using DMMS.Services;
+using DMMS.Utilities;
 
 namespace DMMS.Tools;
 
@@ -30,18 +31,34 @@ public class ChromaPeekCollectionTool
     [Description("View a sample of documents from a collection. Useful for quickly understanding what kind of content is stored without querying.")]
     public virtual async Task<object> PeekCollection(string collection_name, int limit = 5)
     {
+        const string toolName = nameof(ChromaPeekCollectionTool);
+        const string methodName = nameof(PeekCollection);
+        ToolLoggingUtility.LogToolStart(_logger, toolName, methodName, $"collection_name: {collection_name}, limit: {limit}");
+
         try
         {
-            _logger.LogInformation($"[ChromaPeekCollectionTool.PeekCollection] Peeking at collection: {collection_name} with limit={limit}");
+            if (string.IsNullOrWhiteSpace(collection_name))
+            {
+                ToolLoggingUtility.LogToolFailure(_logger, toolName, methodName, "Collection name is required");
+                return new
+                {
+                    success = false,
+                    error = "COLLECTION_NAME_REQUIRED",
+                    message = "Collection name is required"
+                };
+            }
 
             // Validate limit
             if (limit < 1) limit = 5;
             if (limit > 20) limit = 20;
 
+            ToolLoggingUtility.LogToolInfo(_logger, toolName, $"Peeking at collection: {collection_name} with limit={limit}");
+
             // Check if collection exists
             var collection = await _chromaService.GetCollectionAsync(collection_name);
             if (collection == null)
             {
+                ToolLoggingUtility.LogToolFailure(_logger, toolName, methodName, $"Collection '{collection_name}' does not exist");
                 return new
                 {
                     success = false,
@@ -89,10 +106,11 @@ public class ChromaPeekCollectionTool
                 }
                 catch (Exception ex)
                 {
-                    _logger.LogWarning(ex, "Failed to parse ChromaDB result, treating as empty");
+                    ToolLoggingUtility.LogToolWarning(_logger, toolName, "Failed to parse ChromaDB result, treating as empty");
                 }
             }
 
+            ToolLoggingUtility.LogToolSuccess(_logger, toolName, methodName, $"Successfully peeked collection '{collection_name}', showing {documents.Count} of {totalCount} documents");
             return new
             {
                 success = true,
@@ -104,7 +122,7 @@ public class ChromaPeekCollectionTool
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, $"Error peeking collection '{collection_name}'");
+            ToolLoggingUtility.LogToolException(_logger, toolName, methodName, ex);
             return new
             {
                 success = false,

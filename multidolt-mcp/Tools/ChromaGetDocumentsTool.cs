@@ -2,6 +2,7 @@ using Microsoft.Extensions.Logging;
 using ModelContextProtocol.Server;
 using System.ComponentModel;
 using DMMS.Services;
+using DMMS.Utilities;
 
 namespace DMMS.Tools;
 
@@ -37,14 +38,30 @@ public class ChromaGetDocumentsTool
         int limit = 100,
         int offset = 0)
     {
+        const string toolName = nameof(ChromaGetDocumentsTool);
+        const string methodName = nameof(GetDocuments);
+        ToolLoggingUtility.LogToolStart(_logger, toolName, methodName, $"collection_name: {collection_name}, ids_count: {ids?.Count}, limit: {limit}, offset: {offset}");
+
         try
         {
-            _logger.LogInformation($"[ChromaGetDocumentsTool.GetDocuments] Getting documents from collection: {collection_name}");
+            if (string.IsNullOrWhiteSpace(collection_name))
+            {
+                ToolLoggingUtility.LogToolFailure(_logger, toolName, methodName, "Collection name is required");
+                return new
+                {
+                    success = false,
+                    error = "COLLECTION_NAME_REQUIRED",
+                    message = "Collection name is required"
+                };
+            }
+
+            ToolLoggingUtility.LogToolInfo(_logger, toolName, $"Getting documents from collection: {collection_name}");
 
             // Check if collection exists
             var collection = await _chromaService.GetCollectionAsync(collection_name);
             if (collection == null)
             {
+                ToolLoggingUtility.LogToolFailure(_logger, toolName, methodName, $"Collection '{collection_name}' does not exist");
                 return new
                 {
                     success = false,
@@ -95,13 +112,14 @@ public class ChromaGetDocumentsTool
                 }
                 catch (Exception ex)
                 {
-                    _logger.LogWarning(ex, "Failed to parse ChromaDB result, treating as empty");
+                    ToolLoggingUtility.LogToolWarning(_logger, toolName, "Failed to parse ChromaDB result, treating as empty");
                 }
             }
 
             // Calculate if there are more results
             var hasMore = documents.Count == limit;
 
+            ToolLoggingUtility.LogToolSuccess(_logger, toolName, methodName, $"Retrieved {documents.Count} documents from collection '{collection_name}'");
             return new
             {
                 success = true,
@@ -114,7 +132,7 @@ public class ChromaGetDocumentsTool
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, $"Error getting documents from '{collection_name}'");
+            ToolLoggingUtility.LogToolException(_logger, toolName, methodName, ex);
             return new
             {
                 success = false,

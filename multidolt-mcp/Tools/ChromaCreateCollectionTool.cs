@@ -3,6 +3,7 @@ using ModelContextProtocol.Server;
 using System.ComponentModel;
 using System.Text.Json;
 using DMMS.Services;
+using DMMS.Utilities;
 
 namespace DMMS.Tools;
 
@@ -31,18 +32,25 @@ public class ChromaCreateCollectionTool
     [Description("Create a new Chroma collection with configurable HNSW parameters.")]
     public virtual async Task<object> CreateCollection(string collectionName, string? embeddingFunctionName = "default", string? metadataJson = null)
     {
+        const string toolName = nameof(ChromaCreateCollectionTool);
+        const string methodName = nameof(CreateCollection);
+        
         try
         {
+            ToolLoggingUtility.LogToolStart(_logger, toolName, methodName, 
+                $"Collection: '{collectionName}', EmbeddingFunction: '{embeddingFunctionName}', Metadata: {metadataJson?.Length ?? 0} chars");
             if (string.IsNullOrWhiteSpace(collectionName))
             {
+                const string error = "Collection name is required";
+                ToolLoggingUtility.LogToolFailure(_logger, toolName, methodName, error);
                 return new
                 {
                     success = false,
-                    error = "Collection name is required"
+                    error = error
                 };
             }
 
-            _logger.LogInformation($"Creating collection '{collectionName}' with embedding function '{embeddingFunctionName}'");
+            ToolLoggingUtility.LogToolInfo(_logger, toolName, $"Creating collection '{collectionName}' with embedding function '{embeddingFunctionName}'");
 
             Dictionary<string, object>? metadata = null;
             if (!string.IsNullOrWhiteSpace(metadataJson))
@@ -53,25 +61,41 @@ public class ChromaCreateCollectionTool
                 }
                 catch (JsonException ex)
                 {
+                    var error = $"Invalid metadata JSON: {ex.Message}";
+                    ToolLoggingUtility.LogToolFailure(_logger, toolName, methodName, error);
                     return new
                     {
                         success = false,
-                        error = $"Invalid metadata JSON: {ex.Message}"
+                        error = error
                     };
                 }
             }
 
+            var startTime = DateTime.UtcNow;
             var result = await _chromaService.CreateCollectionAsync(collectionName, metadata);
+            var duration = DateTime.UtcNow - startTime;
 
-            return new
+            var response = new
             {
                 success = result,
                 message = result ? $"Successfully created collection '{collectionName}'" : "Failed to create collection"
             };
+
+            if (result)
+            {
+                var resultMessage = $"Created collection '{collectionName}' in {duration.TotalMilliseconds:F1}ms";
+                ToolLoggingUtility.LogToolSuccess(_logger, toolName, methodName, resultMessage);
+            }
+            else
+            {
+                ToolLoggingUtility.LogToolFailure(_logger, toolName, methodName, "Failed to create collection");
+            }
+            
+            return response;
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error creating collection");
+            ToolLoggingUtility.LogToolException(_logger, toolName, methodName, ex);
             return new
             {
                 success = false,

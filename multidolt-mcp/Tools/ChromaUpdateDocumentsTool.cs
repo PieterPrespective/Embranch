@@ -2,6 +2,7 @@ using Microsoft.Extensions.Logging;
 using ModelContextProtocol.Server;
 using System.ComponentModel;
 using DMMS.Services;
+using DMMS.Utilities;
 
 namespace DMMS.Tools;
 
@@ -34,13 +35,27 @@ public class ChromaUpdateDocumentsTool
         List<string>? documents = null,
         List<Dictionary<string, object>>? metadatas = null)
     {
+        const string toolName = nameof(ChromaUpdateDocumentsTool);
+        const string methodName = nameof(UpdateDocuments);
+        ToolLoggingUtility.LogToolStart(_logger, toolName, methodName, $"collection_name: {collection_name}, ids_count: {ids?.Count}, documents_count: {documents?.Count}, metadatas_count: {metadatas?.Count}");
+
         try
         {
-            _logger.LogInformation($"[ChromaUpdateDocumentsTool.UpdateDocuments] Updating {ids.Count} documents in collection: {collection_name}");
+            if (string.IsNullOrWhiteSpace(collection_name))
+            {
+                ToolLoggingUtility.LogToolFailure(_logger, toolName, methodName, "Collection name is required");
+                return new
+                {
+                    success = false,
+                    error = "COLLECTION_NAME_REQUIRED",
+                    message = "Collection name is required"
+                };
+            }
 
             // Validate input
             if (ids == null || ids.Count == 0)
             {
+                ToolLoggingUtility.LogToolFailure(_logger, toolName, methodName, "Document IDs are required for update");
                 return new
                 {
                     success = false,
@@ -49,10 +64,13 @@ public class ChromaUpdateDocumentsTool
                 };
             }
 
+            ToolLoggingUtility.LogToolInfo(_logger, toolName, $"Updating {ids.Count} documents in collection: {collection_name}");
+
             // Check if collection exists
             var collection = await _chromaService.GetCollectionAsync(collection_name);
             if (collection == null)
             {
+                ToolLoggingUtility.LogToolFailure(_logger, toolName, methodName, $"Collection '{collection_name}' does not exist");
                 return new
                 {
                     success = false,
@@ -65,6 +83,7 @@ public class ChromaUpdateDocumentsTool
             if ((documents != null && documents.Count != ids.Count) ||
                 (metadatas != null && metadatas.Count != ids.Count))
             {
+                ToolLoggingUtility.LogToolFailure(_logger, toolName, methodName, "All arrays (documents, metadatas) must match the length of ids array");
                 return new
                 {
                     success = false,
@@ -76,6 +95,7 @@ public class ChromaUpdateDocumentsTool
             // At least one field must be provided for update
             if (documents == null && metadatas == null)
             {
+                ToolLoggingUtility.LogToolFailure(_logger, toolName, methodName, "At least one of documents or metadatas must be provided");
                 return new
                 {
                     success = false,
@@ -92,6 +112,7 @@ public class ChromaUpdateDocumentsTool
                 metadatas: metadatas
             );
 
+            ToolLoggingUtility.LogToolSuccess(_logger, toolName, methodName, $"Successfully updated {ids.Count} documents in collection '{collection_name}'");
             return new
             {
                 success = true,
@@ -103,7 +124,7 @@ public class ChromaUpdateDocumentsTool
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, $"Error updating documents in '{collection_name}'");
+            ToolLoggingUtility.LogToolException(_logger, toolName, methodName, ex);
             return new
             {
                 success = false,

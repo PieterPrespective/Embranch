@@ -3,6 +3,7 @@ using ModelContextProtocol.Server;
 using System.ComponentModel;
 using System.Text.Json;
 using DMMS.Services;
+using DMMS.Utilities;
 
 namespace DMMS.Tools;
 
@@ -31,27 +32,36 @@ public class ChromaDeleteDocumentsTool
     [Description("Delete specific documents from a collection.")]
     public virtual async Task<object> DeleteDocuments(string collectionName, string idsJson)
     {
+        const string toolName = nameof(ChromaDeleteDocumentsTool);
+        const string methodName = nameof(DeleteDocuments);
+        
         try
         {
+            ToolLoggingUtility.LogToolStart(_logger, toolName, methodName, 
+                $"Collection: '{collectionName}', IDs: {idsJson?.Length ?? 0} chars");
             if (string.IsNullOrWhiteSpace(collectionName))
             {
+                const string error = "Collection name is required";
+                ToolLoggingUtility.LogToolFailure(_logger, toolName, methodName, error);
                 return new
                 {
                     success = false,
-                    error = "Collection name is required"
+                    error = error
                 };
             }
 
             if (string.IsNullOrWhiteSpace(idsJson))
             {
+                const string error = "IDs JSON is required";
+                ToolLoggingUtility.LogToolFailure(_logger, toolName, methodName, error);
                 return new
                 {
                     success = false,
-                    error = "IDs JSON is required"
+                    error = error
                 };
             }
 
-            _logger.LogInformation($"Deleting documents from collection '{collectionName}'");
+            ToolLoggingUtility.LogToolInfo(_logger, toolName, $"Deleting documents from collection '{collectionName}'");
 
             List<string> ids;
             try
@@ -60,33 +70,52 @@ public class ChromaDeleteDocumentsTool
             }
             catch (JsonException ex)
             {
+                var error = $"Invalid IDs JSON format: {ex.Message}";
+                ToolLoggingUtility.LogToolFailure(_logger, toolName, methodName, error);
                 return new
                 {
                     success = false,
-                    error = $"Invalid IDs JSON format: {ex.Message}"
+                    error = error
                 };
             }
 
             if (ids.Count == 0)
             {
+                const string error = "IDs list cannot be empty";
+                ToolLoggingUtility.LogToolFailure(_logger, toolName, methodName, error);
                 return new
                 {
                     success = false,
-                    error = "IDs list cannot be empty"
+                    error = error
                 };
             }
 
+            ToolLoggingUtility.LogToolInfo(_logger, toolName, $"Attempting to delete {ids.Count} documents from collection '{collectionName}'");
+            var startTime = DateTime.UtcNow;
             var result = await _chromaService.DeleteDocumentsAsync(collectionName, ids);
+            var duration = DateTime.UtcNow - startTime;
 
-            return new
+            var response = new
             {
                 success = result,
                 message = result ? $"Successfully deleted {ids.Count} documents from collection '{collectionName}'" : "Failed to delete documents"
             };
+
+            if (result)
+            {
+                var resultMessage = $"Deleted {ids.Count} documents from '{collectionName}' in {duration.TotalMilliseconds:F1}ms";
+                ToolLoggingUtility.LogToolSuccess(_logger, toolName, methodName, resultMessage);
+            }
+            else
+            {
+                ToolLoggingUtility.LogToolFailure(_logger, toolName, methodName, "Failed to delete documents");
+            }
+            
+            return response;
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error deleting documents");
+            ToolLoggingUtility.LogToolException(_logger, toolName, methodName, ex);
             return new
             {
                 success = false,

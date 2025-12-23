@@ -185,6 +185,25 @@ namespace DMMS.Models
         /// </summary>
         public string GetSummary() => 
             $"{NewDocuments.Count} new, {ModifiedDocuments.Count} modified, {DeletedDocuments.Count} deleted";
+        
+        /// <summary>
+        /// Get all collection names affected by these changes
+        /// </summary>
+        public IEnumerable<string> GetAffectedCollectionNames()
+        {
+            var collections = new HashSet<string>();
+            
+            foreach (var doc in NewDocuments)
+                collections.Add(doc.CollectionName);
+            
+            foreach (var doc in ModifiedDocuments)
+                collections.Add(doc.CollectionName);
+            
+            foreach (var doc in DeletedDocuments)
+                collections.Add(doc.CollectionName);
+            
+            return collections;
+        }
     }
     
     #endregion

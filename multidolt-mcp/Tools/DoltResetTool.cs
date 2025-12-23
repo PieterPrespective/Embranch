@@ -2,6 +2,7 @@ using Microsoft.Extensions.Logging;
 using ModelContextProtocol.Server;
 using System.ComponentModel;
 using DMMS.Services;
+using DMMS.Utilities;
 
 namespace DMMS.Tools;
 
@@ -32,18 +33,24 @@ public class DoltResetTool
     [Description("Reset the current branch to a specific commit, updating ChromaDB to match. WARNING: This discards uncommitted local changes.")]
     public virtual async Task<object> DoltReset(string target = "HEAD", bool confirm_discard = false)
     {
+        const string toolName = nameof(DoltResetTool);
+        const string methodName = nameof(DoltReset);
+        
         try
         {
-            _logger.LogInformation($"[DoltResetTool.DoltReset] Resetting to: {target}, confirm={confirm_discard}");
+            ToolLoggingUtility.LogToolStart(_logger, toolName, methodName,
+                $"target: '{target}', confirm_discard: {confirm_discard}");
 
             // First check if Dolt is available
             var doltCheck = await _doltCli.CheckDoltAvailableAsync();
             if (!doltCheck.Success)
             {
+                const string error = "DOLT_EXECUTABLE_NOT_FOUND";
+                ToolLoggingUtility.LogToolFailure(_logger, toolName, methodName, error);
                 return new
                 {
                     success = false,
-                    error = "DOLT_EXECUTABLE_NOT_FOUND",
+                    error = error,
                     message = doltCheck.Error
                 };
             }
@@ -52,10 +59,12 @@ public class DoltResetTool
             var isInitialized = await _doltCli.IsInitializedAsync();
             if (!isInitialized)
             {
+                const string error = "NOT_INITIALIZED";
+                ToolLoggingUtility.LogToolFailure(_logger, toolName, methodName, error);
                 return new
                 {
                     success = false,
-                    error = "NOT_INITIALIZED",
+                    error = error,
                     message = "No Dolt repository configured. Use dolt_init or dolt_clone first."
                 };
             }
@@ -69,10 +78,12 @@ public class DoltResetTool
 
             if (hasChanges && !confirm_discard)
             {
+                const string error = "CONFIRMATION_REQUIRED";
+                ToolLoggingUtility.LogToolFailure(_logger, toolName, methodName, error);
                 return new
                 {
                     success = false,
-                    error = "CONFIRMATION_REQUIRED",
+                    error = error,
                     message = $"You have {localChanges?.TotalChanges ?? 0} uncommitted changes that will be lost. Set confirm_discard=true to proceed.",
                     local_changes = new
                     {
@@ -121,7 +132,7 @@ public class DoltResetTool
                 documents_removed = 0
             };
 
-            return new
+            var response = new
             {
                 success = true,
                 reset_result = new
@@ -135,10 +146,16 @@ public class DoltResetTool
                     ? $"Reset to '{target}' and discarded {discardedChanges.total} local changes"
                     : $"Reset to '{target}'"
             };
+            
+            ToolLoggingUtility.LogToolSuccess(_logger, toolName, methodName, 
+                hasChanges 
+                    ? $"Reset to '{target}' and discarded {discardedChanges.total} local changes"
+                    : $"Reset to '{target}'");
+            return response;
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, $"Error resetting to '{target}'");
+            ToolLoggingUtility.LogToolException(_logger, toolName, methodName, ex);
             
             string errorCode = "OPERATION_FAILED";
             if (ex.Message.Contains("not found", StringComparison.OrdinalIgnoreCase))

@@ -2,6 +2,7 @@ using Microsoft.Extensions.Logging;
 using ModelContextProtocol.Server;
 using System.ComponentModel;
 using DMMS.Services;
+using DMMS.Utilities;
 
 namespace DMMS.Tools;
 
@@ -30,18 +31,24 @@ public class DoltShowTool
     [Description("Show detailed information about a specific commit, including the list of documents that were added, modified, or deleted.")]
     public virtual async Task<object> DoltShow(string commit, bool include_diff = false, int diff_limit = 10)
     {
+        const string toolName = nameof(DoltShowTool);
+        const string methodName = nameof(DoltShow);
+        
         try
         {
-            _logger.LogInformation($"[DoltShowTool.DoltShow] Showing commit: {commit}, include_diff={include_diff}");
+            ToolLoggingUtility.LogToolStart(_logger, toolName, methodName,
+                $"commit: '{commit}', include_diff: {include_diff}, diff_limit: {diff_limit}");
 
             // First check if Dolt is available
             var doltCheck = await _doltCli.CheckDoltAvailableAsync();
             if (!doltCheck.Success)
             {
+                const string error = "DOLT_EXECUTABLE_NOT_FOUND";
+                ToolLoggingUtility.LogToolFailure(_logger, toolName, methodName, error);
                 return new
                 {
                     success = false,
-                    error = "DOLT_EXECUTABLE_NOT_FOUND",
+                    error = error,
                     message = doltCheck.Error
                 };
             }
@@ -50,10 +57,12 @@ public class DoltShowTool
             var isInitialized = await _doltCli.IsInitializedAsync();
             if (!isInitialized)
             {
+                const string error = "NOT_INITIALIZED";
+                ToolLoggingUtility.LogToolFailure(_logger, toolName, methodName, error);
                 return new
                 {
                     success = false,
-                    error = "NOT_INITIALIZED",
+                    error = error,
                     message = "No Dolt repository configured. Use dolt_init or dolt_clone first."
                 };
             }
@@ -74,10 +83,12 @@ public class DoltShowTool
 
             if (targetCommit == null)
             {
+                const string error = "COMMIT_NOT_FOUND";
+                ToolLoggingUtility.LogToolFailure(_logger, toolName, methodName, error);
                 return new
                 {
                     success = false,
-                    error = "COMMIT_NOT_FOUND",
+                    error = error,
                     message = $"Commit '{commit}' not found"
                 };
             }
@@ -106,7 +117,7 @@ public class DoltShowTool
                 .Select(b => b.Name)
                 .ToArray() ?? Array.Empty<string>();
 
-            return new
+            var response = new
             {
                 success = true,
                 commit = new
@@ -122,10 +133,14 @@ public class DoltShowTool
                 branches = containingBranches,
                 message = $"Commit '{targetCommit.Hash?.Substring(0, 7)}': {targetCommit.Message}"
             };
+            
+            ToolLoggingUtility.LogToolSuccess(_logger, toolName, methodName, 
+                $"Successfully showed commit '{targetCommit.Hash?.Substring(0, 7)}': {targetCommit.Message}");
+            return response;
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, $"Error showing commit '{commit}'");
+            ToolLoggingUtility.LogToolException(_logger, toolName, methodName, ex);
             return new
             {
                 success = false,

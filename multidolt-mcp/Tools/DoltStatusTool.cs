@@ -2,6 +2,7 @@ using Microsoft.Extensions.Logging;
 using ModelContextProtocol.Server;
 using System.ComponentModel;
 using DMMS.Services;
+using DMMS.Utilities;
 
 namespace DMMS.Tools;
 
@@ -32,19 +33,24 @@ public class DoltStatusTool
     [Description("Get the current version control status including active branch, current commit, and any uncommitted local changes in the ChromaDB working copy.")]
     public virtual async Task<object> DoltStatus(bool verbose = false)
     {
-
+        const string toolName = nameof(DoltStatusTool);
+        const string methodName = nameof(DoltStatus);
+        
         try
         {
-            _logger.LogInformation($"[DoltStatusTool.DoltStatus] Getting status with verbose={verbose}");
+            ToolLoggingUtility.LogToolStart(_logger, toolName, methodName, $"Verbose: {verbose}");
+            ToolLoggingUtility.LogToolInfo(_logger, toolName, $"Getting status with verbose={verbose}");
 
             // First check if Dolt is available
             var doltCheck = await _doltCli.CheckDoltAvailableAsync();
             if (!doltCheck.Success)
             {
+                const string error = "DOLT_EXECUTABLE_NOT_FOUND";
+                ToolLoggingUtility.LogToolFailure(_logger, toolName, methodName, $"{error}: {doltCheck.Error}");
                 return new
                 {
                     success = false,
-                    error = "DOLT_EXECUTABLE_NOT_FOUND",
+                    error = error,
                     message = doltCheck.Error
                 };
             }
@@ -53,11 +59,14 @@ public class DoltStatusTool
             var isInitialized = await _doltCli.IsInitializedAsync();
             if (!isInitialized)
             {
+                const string error = "NOT_INITIALIZED";
+                const string errorMessage = "No Dolt repository configured. Use dolt_init or dolt_clone first.";
+                ToolLoggingUtility.LogToolFailure(_logger, toolName, methodName, $"{error}: {errorMessage}");
                 return new
                 {
                     success = false,
-                    error = "NOT_INITIALIZED",
-                    message = "No Dolt repository configured. Use dolt_init or dolt_clone first."
+                    error = error,
+                    message = errorMessage
                 };
             }
 
@@ -74,6 +83,7 @@ public class DoltStatusTool
             var primaryRemote = remotes?.FirstOrDefault();
 
             // Get local changes from sync manager
+            ToolLoggingUtility.LogToolInfo(_logger, toolName, "Gathering repository status information");
             var syncStatus = await _syncManager.GetStatusAsync();
             var localChanges = await _syncManager.GetLocalChangesAsync();
 
@@ -124,11 +134,13 @@ public class DoltStatusTool
                 ["message"] = $"On branch '{currentBranch}' with {changesSummary.total} uncommitted changes"
             };
 
+            var resultMessage = $"Status for branch '{currentBranch}' with {changesSummary.total} changes";
+            ToolLoggingUtility.LogToolSuccess(_logger, toolName, methodName, resultMessage);
             return result;
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error getting Dolt status");
+            ToolLoggingUtility.LogToolException(_logger, toolName, methodName, ex);
             return new
             {
                 success = false,

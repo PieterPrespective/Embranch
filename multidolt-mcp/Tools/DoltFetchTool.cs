@@ -2,6 +2,7 @@ using Microsoft.Extensions.Logging;
 using ModelContextProtocol.Server;
 using System.ComponentModel;
 using DMMS.Services;
+using DMMS.Utilities;
 
 namespace DMMS.Tools;
 
@@ -30,14 +31,19 @@ public class DoltFetchTool
     [Description("Fetch commits from the remote repository without applying them to your local ChromaDB. Use this to see what changes are available before pulling.")]
     public virtual async Task<object> DoltFetch(string remote = "origin", string? branch = null)
     {
+        const string toolName = nameof(DoltFetchTool);
+        const string methodName = nameof(DoltFetch);
+        ToolLoggingUtility.LogToolStart(_logger, toolName, methodName, $"remote: {remote}, branch: {branch}");
+
         try
         {
-            _logger.LogInformation($"[DoltFetchTool.DoltFetch] Fetching from remote={remote}, branch={branch}");
+            ToolLoggingUtility.LogToolInfo(_logger, toolName, $"Fetching from remote={remote}, branch={branch}");
 
             // First check if Dolt is available
             var doltCheck = await _doltCli.CheckDoltAvailableAsync();
             if (!doltCheck.Success)
             {
+                ToolLoggingUtility.LogToolFailure(_logger, toolName, methodName, doltCheck.Error ?? "Dolt executable not found");
                 return new
                 {
                     success = false,
@@ -50,6 +56,7 @@ public class DoltFetchTool
             var isInitialized = await _doltCli.IsInitializedAsync();
             if (!isInitialized)
             {
+                ToolLoggingUtility.LogToolFailure(_logger, toolName, methodName, "No Dolt repository configured. Use dolt_init or dolt_clone first.");
                 return new
                 {
                     success = false,
@@ -62,6 +69,7 @@ public class DoltFetchTool
             var remotes = await _doltCli.ListRemotesAsync();
             if (remotes?.Any(r => r.Name == remote) != true)
             {
+                ToolLoggingUtility.LogToolFailure(_logger, toolName, methodName, $"Remote '{remote}' not configured");
                 return new
                 {
                     success = false,
@@ -91,6 +99,11 @@ public class DoltFetchTool
             var newBranches = new List<string>();
             int totalCommitsFetched = 0;
 
+            string successMessage = totalCommitsFetched > 0
+                ? $"Fetched {totalCommitsFetched} new commits from remote '{remote}'"
+                : "Already up to date with remote.";
+            
+            ToolLoggingUtility.LogToolSuccess(_logger, toolName, methodName, successMessage);
             return new
             {
                 success = true,
@@ -109,12 +122,11 @@ public class DoltFetchTool
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, $"Error fetching from remote '{remote}'");
-            
             string errorCode = "OPERATION_FAILED";
             if (ex.Message.Contains("unreachable", StringComparison.OrdinalIgnoreCase))
                 errorCode = "REMOTE_UNREACHABLE";
             
+            ToolLoggingUtility.LogToolException(_logger, toolName, methodName, ex);
             return new
             {
                 success = false,

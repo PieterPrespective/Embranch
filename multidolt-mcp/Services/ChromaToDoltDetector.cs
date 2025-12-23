@@ -477,15 +477,24 @@ namespace DMMS.Services
                 FROM documents
                 WHERE collection_name = '{collectionName}'";
 
-            var results = await _dolt.QueryAsync<dynamic>(sql);
-            var hashes = new Dictionary<string, string>();
-            
-            foreach (var row in results)
+            try
             {
-                hashes[row.doc_id] = row.content_hash;
+                var results = await _dolt.QueryAsync<dynamic>(sql);
+                var hashes = new Dictionary<string, string>();
+                
+                foreach (var row in results)
+                {
+                    hashes[row.doc_id] = row.content_hash;
+                }
+                
+                return hashes;
             }
-            
-            return hashes;
+            catch (DoltException ex) when (ex.Message.Contains("table not found"))
+            {
+                // Fresh/empty Dolt database - documents table doesn't exist yet, so no hashes to compare
+                _logger?.LogDebug("Documents table not found in Dolt - returning empty hashes (empty database)");
+                return new Dictionary<string, string>();
+            }
         }
 
         /// <summary>
@@ -512,8 +521,17 @@ namespace DMMS.Services
                 FROM documents
                 WHERE collection_name = '{collectionName}'";
 
-            var results = await _dolt.QueryAsync<dynamic>(sql);
-            return results.Select(r => ((string)r.doc_id, (string)r.content_hash)).ToList();
+            try
+            {
+                var results = await _dolt.QueryAsync<dynamic>(sql);
+                return results.Select(r => ((string)r.doc_id, (string)r.content_hash)).ToList();
+            }
+            catch (DoltException ex) when (ex.Message.Contains("table not found"))
+            {
+                // Fresh/empty Dolt database - documents table doesn't exist yet, so no documents to return
+                _logger?.LogDebug("Documents table not found in Dolt - returning empty documents list (empty database)");
+                return new List<(string DocId, string ContentHash)>();
+            }
         }
 
         /// <summary>
@@ -559,17 +577,31 @@ namespace DMMS.Services
                 _logger?.LogDebug("Batch existence check: {ExistingCount} of {TotalCount} documents exist in Dolt", existingIds.Count, docIds.Count);
                 return existingIds;
             }
+            catch (DoltException doltEx) when (doltEx.Message.Contains("table not found"))
+            {
+                // Fresh/empty Dolt database - documents table doesn't exist yet, so no documents exist
+                _logger?.LogDebug("Documents table not found in Dolt - treating all documents as new (empty database)");
+                return new HashSet<string>();
+            }
             catch (Exception ex)
             {
                 _logger?.LogError(ex, "Failed to batch check document existence, falling back to individual checks");
                 
-                // Fallback to individual checks if batch query fails
+                // Fallback to individual checks if batch query fails (for non-table-not-found errors)
                 var existingIds = new HashSet<string>();
                 foreach (var docId in docIds)
                 {
-                    if (await DocumentExistsInDoltAsync(docId, collectionName))
+                    try
                     {
-                        existingIds.Add(docId);
+                        if (await DocumentExistsInDoltAsync(docId, collectionName))
+                        {
+                            existingIds.Add(docId);
+                        }
+                    }
+                    catch (DoltException doltEx) when (doltEx.Message.Contains("table not found"))
+                    {
+                        // Document doesn't exist (table doesn't exist)
+                        continue;
                     }
                 }
                 return existingIds;

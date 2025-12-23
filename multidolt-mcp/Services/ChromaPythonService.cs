@@ -354,42 +354,41 @@ public class ChromaPythonService : IChromaDbService, IDisposable
             PyObject pyDocuments = ConvertListToPyList(documents);
             PyObject? pyMetadatas = null;
 
+            // Ensure all documents have is_local_change=true metadata for Phase 2 change detection
+            List<Dictionary<string, object>> finalMetadatas;
             if (metadatas != null && metadatas.Count > 0)
             {
-                pyMetadatas = ConvertMetadatasToPyList(metadatas);
-            }
-            
-            // Add documents to collection
-            if (pyMetadatas != null)
-            {
-                try
+                finalMetadatas = metadatas.Select(meta => 
                 {
-                    collection.add(
+                    var newMeta = new Dictionary<string, object>(meta);
+                    newMeta["is_local_change"] = true;
+                    return newMeta;
+                }).ToList();
+            }
+            else
+            {
+                // Create metadata with is_local_change=true for all documents
+                finalMetadatas = ids.Select(_ => new Dictionary<string, object> 
+                { 
+                    ["is_local_change"] = true 
+                }).ToList();
+            }
+
+            pyMetadatas = ConvertMetadatasToPyList(finalMetadatas);
+            
+            // Add documents to collection (always with metadata now for change detection)
+            try
+            {
+                collection.add(
                     ids: pyIds,
                     documents: pyDocuments,
                     metadatas: pyMetadatas
                 );
-                }
-                catch (PythonException ex)
-                {
-                    _logger.LogError($"Failed to get or create collection '{collectionName}': {ex.Message}");
-                    return false;
-                }
             }
-            else
+            catch (PythonException ex)
             {
-                try
-                {
-                    collection.add(
-                    ids: pyIds,
-                    documents: pyDocuments
-                );
-                }
-                catch (PythonException ex)
-                {
-                    _logger.LogError($"Failed to get or create collection '{collectionName}': {ex.Message}");
-                    return false;
-                }
+                _logger.LogError($"Failed to add documents to collection '{collectionName}': {ex.Message}");
+                return false;
             }
 
             _logger.LogInformation($"Added {documents.Count} documents to collection '{collectionName}'");
@@ -648,6 +647,14 @@ public class ChromaPythonService : IChromaDbService, IDisposable
                 return 0; // Return 0 on error
             }
         }, timeoutMs: 30000, operationName: $"GetCollectionCount_{collectionName}");
+    }
+
+    /// <summary>
+    /// Gets the count of documents in a collection (alias for GetCollectionCountAsync for consistency)
+    /// </summary>
+    public async Task<int> GetDocumentCountAsync(string collectionName)
+    {
+        return await GetCollectionCountAsync(collectionName);
     }
 
     #region Python Conversion Helpers

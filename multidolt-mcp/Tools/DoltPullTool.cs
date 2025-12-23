@@ -2,6 +2,7 @@ using Microsoft.Extensions.Logging;
 using ModelContextProtocol.Server;
 using System.ComponentModel;
 using DMMS.Services;
+using DMMS.Utilities;
 
 namespace DMMS.Tools;
 
@@ -36,18 +37,24 @@ public class DoltPullTool
         string if_uncommitted = "abort",
         string? commit_message = null)
     {
+        const string toolName = nameof(DoltPullTool);
+        const string methodName = nameof(DoltPull);
+        
         try
         {
-            _logger.LogInformation($"[DoltPullTool.DoltPull] Pulling from remote={remote}, branch={branch}, if_uncommitted={if_uncommitted}");
+            ToolLoggingUtility.LogToolStart(_logger, toolName, methodName,
+                $"remote: '{remote}', branch: '{branch}', if_uncommitted: '{if_uncommitted}', commit_message: '{commit_message}'");
 
             // First check if Dolt is available
             var doltCheck = await _doltCli.CheckDoltAvailableAsync();
             if (!doltCheck.Success)
             {
+                const string error = "DOLT_EXECUTABLE_NOT_FOUND";
+                ToolLoggingUtility.LogToolFailure(_logger, toolName, methodName, error);
                 return new
                 {
                     success = false,
-                    error = "DOLT_EXECUTABLE_NOT_FOUND",
+                    error = error,
                     message = doltCheck.Error
                 };
             }
@@ -56,10 +63,12 @@ public class DoltPullTool
             var isInitialized = await _doltCli.IsInitializedAsync();
             if (!isInitialized)
             {
+                const string error = "NOT_INITIALIZED";
+                ToolLoggingUtility.LogToolFailure(_logger, toolName, methodName, error);
                 return new
                 {
                     success = false,
-                    error = "NOT_INITIALIZED",
+                    error = error,
                     message = "No Dolt repository configured. Use dolt_init or dolt_clone first."
                 };
             }
@@ -74,10 +83,12 @@ public class DoltPullTool
                 switch (if_uncommitted)
                 {
                     case "abort":
+                        const string error = "UNCOMMITTED_CHANGES";
+                        ToolLoggingUtility.LogToolFailure(_logger, toolName, methodName, error);
                         return new
                         {
                             success = false,
-                            error = "UNCOMMITTED_CHANGES",
+                            error = error,
                             message = $"You have {localChanges?.TotalChanges ?? 0} uncommitted changes. Choose an action: 'commit_first' to save your changes, 'reset_first' to discard them, or 'stash' to temporarily save them.",
                             local_changes = new
                             {
@@ -100,7 +111,7 @@ public class DoltPullTool
 
                     case "stash":
                         // TODO: Implement stash functionality
-                        _logger.LogWarning("Stash functionality not yet implemented");
+                        ToolLoggingUtility.LogToolWarning(_logger, toolName, "Stash functionality not yet implemented");
                         break;
                 }
             }
@@ -124,7 +135,7 @@ public class DoltPullTool
                 total_changes = 0
             };
 
-            return new
+            var response = new
             {
                 success = pullResult.Success,
                 action_taken = new
@@ -148,10 +159,22 @@ public class DoltPullTool
                     ? $"Successfully pulled and merged changes from {remote}/{branch ?? "current branch"}"
                     : $"Pull failed: {pullResult.ErrorMessage}"
             };
+            
+            if (pullResult.Success)
+            {
+                ToolLoggingUtility.LogToolSuccess(_logger, toolName, methodName, 
+                    $"Successfully pulled from {remote}/{branch ?? "current branch"}");
+            }
+            else
+            {
+                ToolLoggingUtility.LogToolFailure(_logger, toolName, methodName, "PULL_FAILED");
+            }
+            
+            return response;
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, $"Error pulling from remote '{remote}'");
+            ToolLoggingUtility.LogToolException(_logger, toolName, methodName, ex);
             
             string errorCode = "OPERATION_FAILED";
             if (ex.Message.Contains("conflict", StringComparison.OrdinalIgnoreCase))

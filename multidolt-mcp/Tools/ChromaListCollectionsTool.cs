@@ -2,6 +2,7 @@ using Microsoft.Extensions.Logging;
 using ModelContextProtocol.Server;
 using System.ComponentModel;
 using DMMS.Services;
+using DMMS.Utilities;
 
 namespace DMMS.Tools;
 
@@ -30,18 +31,22 @@ public class ChromaListCollectionsTool
     [Description("List all collection names in the Chroma database with pagination support.")]
     public virtual async Task<object> ListCollections(int? limit = null, int? offset = null)
     {
+        const string toolName = nameof(ChromaListCollectionsTool);
+        const string methodName = nameof(ListCollections);
+        ToolLoggingUtility.LogToolStart(_logger, toolName, methodName, $"limit: {limit}, offset: {offset}");
+
         try
         {
-            _logger.LogInformation($"[ChromaListCollectionsTool.ListCollections] Listing collections with limit={limit}, offset={offset}");
+            ToolLoggingUtility.LogToolInfo(_logger, toolName, $"Listing collections with limit={limit}, offset={offset}");
 
             var collections = await _chromaService.ListCollectionsAsync(limit, offset);
 
-            _logger.LogInformation($"[ChromaListCollectionsTool.ListCollections] gotten output: { ((collections == null) ? "Null" : string.Join(',', collections.ToArray())) }");
-
+            ToolLoggingUtility.LogToolInfo(_logger, toolName, $"Retrieved collections: {((collections == null) ? "Null" : string.Join(',', collections.ToArray()))}");
 
             // Note: Keep empty list instead of adding placeholder for proper JSON format
             var totalCount = collections?.Count ?? 0;
             
+            ToolLoggingUtility.LogToolSuccess(_logger, toolName, methodName, $"Successfully listed {totalCount} collections");
             return new
             {
                 collections = collections?.ToArray() ?? Array.Empty<string>(),
@@ -50,7 +55,7 @@ public class ChromaListCollectionsTool
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error listing collections");
+            ToolLoggingUtility.LogToolException(_logger, toolName, methodName, ex);
             return new
             {
                 success = false,

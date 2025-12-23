@@ -145,6 +145,9 @@ namespace DMMS.Services
                 var results = await _dolt.QueryAsync<dynamic>(sql);
                 var documents = new List<DoltDocumentV2>();
 
+                _logger?.LogDebug("GetAllDocumentsAsync: SQL query returned {Count} rows for collection {Collection}", 
+                    results.Count(), collectionName);
+
                 foreach (var row in results)
                 {
                     // Parse metadata JSON - try both possible column names
@@ -685,6 +688,37 @@ namespace DMMS.Services
             {
                 _logger?.LogError(ex, "Failed to ensure collection '{Collection}' exists in Dolt database", collectionName);
                 throw new InvalidOperationException($"Failed to create collection '{collectionName}' in Dolt: {ex.Message}", ex);
+            }
+        }
+        /// <summary>
+        /// Get the document count for a specific collection from Dolt
+        /// </summary>
+        public async Task<int> GetDocumentCountAsync(string collectionName)
+        {
+            try
+            {
+                _logger?.LogDebug("Getting document count for collection {Collection}", collectionName);
+                
+                var sql = $@"
+                    SELECT COUNT(DISTINCT doc_id) as count
+                    FROM documents
+                    WHERE collection_name = '{collectionName}'";
+                
+                var results = await _dolt.QueryAsync<dynamic>(sql);
+                var result = results.FirstOrDefault();
+                
+                if (result != null && result.count != null)
+                {
+                    var count = Convert.ToInt32(result.count);
+                    return count;
+                }
+                
+                return 0;
+            }
+            catch (Exception ex)
+            {
+                _logger?.LogError(ex, "Failed to get document count for collection {Collection}", collectionName);
+                return 0;
             }
         }
     }

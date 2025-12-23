@@ -20,6 +20,8 @@
 	- Use NUnit for unit and integration testing - please place create the tests in a seperate project named {ProjectNamespace}Testing
 	- please be descriptive in the test functions' summary on what exactly is tested. If possible, use test fixtures and cases for variant testing
 	- Prefer using the Assert.That notation form - for examples on this format see: https://moleseyhill.com/2018-12-01-nunit-assert-that-examples.html
+	- When creating tests make sure to do the following:
+		- in the teardown, only remove the chroma and dolt collections that were created during the tests; removing the actual files is not possible - they are locked by the python context (and not released until the c# application quits)
 # logging Rules
 - Store data within the chroma databases' in chunks of maximally 512-1024 tokens
 

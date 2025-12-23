@@ -3,6 +3,7 @@ using ModelContextProtocol.Server;
 using System.ComponentModel;
 using DMMS.Services;
 using DMMS.Models;
+using DMMS.Utilities;
 
 namespace DMMS.Tools;
 
@@ -31,14 +32,19 @@ public class DoltBranchesTool
     [Description("Manage branches in the Dolt repository. Actions: 'list' (default) - list branches with optional filter; 'create' - create new branch using filter as name; 'delete' - delete branch using filter as name; 'rename' - rename branch using filter as JSON {'old': 'oldname', 'new': 'newname', 'force': false}.")]
     public virtual async Task<object> DoltBranches(string action = "list", bool include_local = true, string? filter = null)
     {
+        const string toolName = nameof(DoltBranchesTool);
+        const string methodName = nameof(DoltBranches);
+        ToolLoggingUtility.LogToolStart(_logger, toolName, methodName, $"action: {action}, include_local: {include_local}, filter: {filter}");
+
         try
         {
-            _logger.LogInformation($"[DoltBranchesTool.DoltBranches] Action: {action}, include_local={include_local}, filter={filter}");
+            ToolLoggingUtility.LogToolInfo(_logger, toolName, $"Action: {action}, include_local={include_local}, filter={filter}");
 
             // Check if repository is initialized
             var isInitialized = await _doltCli.IsInitializedAsync();
             if (!isInitialized)
             {
+                ToolLoggingUtility.LogToolFailure(_logger, toolName, methodName, "No Dolt repository configured. Use dolt_init or dolt_clone first.");
                 return new
                 {
                     success = false,
@@ -51,11 +57,14 @@ public class DoltBranchesTool
             switch (action.ToLowerInvariant())
             {
                 case "list":
-                    return await ListBranchesAsync(include_local, filter);
+                    var listResult = await ListBranchesAsync(include_local, filter);
+                    ToolLoggingUtility.LogToolSuccess(_logger, toolName, methodName, $"Successfully listed branches");
+                    return listResult;
                 
                 case "create":
                     if (string.IsNullOrEmpty(filter))
                     {
+                        ToolLoggingUtility.LogToolFailure(_logger, toolName, methodName, "Branch name is required for create action");
                         return new
                         {
                             success = false,
@@ -63,11 +72,21 @@ public class DoltBranchesTool
                             message = "Branch name is required for create action. Provide it as 'filter' parameter."
                         };
                     }
-                    return await CreateBranchAsync(filter);
+                    var createResult = await CreateBranchAsync(filter);
+                    if (((dynamic)createResult).success)
+                    {
+                        ToolLoggingUtility.LogToolSuccess(_logger, toolName, methodName, $"Successfully created branch '{filter}'");
+                    }
+                    else
+                    {
+                        ToolLoggingUtility.LogToolFailure(_logger, toolName, methodName, $"Failed to create branch '{filter}'");
+                    }
+                    return createResult;
                 
                 case "delete":
                     if (string.IsNullOrEmpty(filter))
                     {
+                        ToolLoggingUtility.LogToolFailure(_logger, toolName, methodName, "Branch name is required for delete action");
                         return new
                         {
                             success = false,
@@ -75,11 +94,21 @@ public class DoltBranchesTool
                             message = "Branch name is required for delete action. Provide it as 'filter' parameter."
                         };
                     }
-                    return await DeleteBranchAsync(filter);
+                    var deleteResult = await DeleteBranchAsync(filter);
+                    if (((dynamic)deleteResult).success)
+                    {
+                        ToolLoggingUtility.LogToolSuccess(_logger, toolName, methodName, $"Successfully deleted branch '{filter}'");
+                    }
+                    else
+                    {
+                        ToolLoggingUtility.LogToolFailure(_logger, toolName, methodName, $"Failed to delete branch '{filter}'");
+                    }
+                    return deleteResult;
                 
                 case "rename":
                     if (string.IsNullOrEmpty(filter))
                     {
+                        ToolLoggingUtility.LogToolFailure(_logger, toolName, methodName, "Rename parameters required");
                         return new
                         {
                             success = false,
@@ -87,9 +116,19 @@ public class DoltBranchesTool
                             message = "Rename parameters required. Provide JSON as 'filter': {\"old\": \"oldname\", \"new\": \"newname\", \"force\": false}"
                         };
                     }
-                    return await RenameBranchAsync(filter);
+                    var renameResult = await RenameBranchAsync(filter);
+                    if (((dynamic)renameResult).success)
+                    {
+                        ToolLoggingUtility.LogToolSuccess(_logger, toolName, methodName, "Successfully renamed branch");
+                    }
+                    else
+                    {
+                        ToolLoggingUtility.LogToolFailure(_logger, toolName, methodName, "Failed to rename branch");
+                    }
+                    return renameResult;
                 
                 default:
+                    ToolLoggingUtility.LogToolFailure(_logger, toolName, methodName, $"Unknown action '{action}'");
                     return new
                     {
                         success = false,
@@ -100,13 +139,12 @@ public class DoltBranchesTool
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error in branch operation");
-            
             // Check if this is a dolt executable not found error
             if (ex.Message.Contains("Dolt executable not found") || 
                 ex.Message.Contains("not found") ||
                 ex.Message.Contains("cannot find"))
             {
+                ToolLoggingUtility.LogToolFailure(_logger, toolName, methodName, "Dolt executable not found. Please ensure Dolt is installed and added to PATH environment variable.");
                 return new
                 {
                     success = false,
@@ -115,6 +153,7 @@ public class DoltBranchesTool
                 };
             }
             
+            ToolLoggingUtility.LogToolException(_logger, toolName, methodName, ex);
             return new
             {
                 success = false,

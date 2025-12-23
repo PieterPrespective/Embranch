@@ -2,6 +2,7 @@ using Microsoft.Extensions.Logging;
 using ModelContextProtocol.Server;
 using System.ComponentModel;
 using DMMS.Services;
+using DMMS.Utilities;
 
 namespace DMMS.Tools;
 
@@ -30,10 +31,15 @@ public class ChromaDeleteCollectionTool
     [Description("Delete a collection from ChromaDB.")]
     public virtual async Task<object> DeleteCollection(string collectionName)
     {
+        const string toolName = nameof(ChromaDeleteCollectionTool);
+        const string methodName = nameof(DeleteCollection);
+        ToolLoggingUtility.LogToolStart(_logger, toolName, methodName, $"collectionName: {collectionName}");
+
         try
         {
             if (string.IsNullOrWhiteSpace(collectionName))
             {
+                ToolLoggingUtility.LogToolFailure(_logger, toolName, methodName, "Collection name is required");
                 return new
                 {
                     success = false,
@@ -41,9 +47,18 @@ public class ChromaDeleteCollectionTool
                 };
             }
 
-            _logger.LogInformation($"Deleting collection '{collectionName}'");
+            ToolLoggingUtility.LogToolInfo(_logger, toolName, $"Deleting collection '{collectionName}'");
 
             var result = await _chromaService.DeleteCollectionAsync(collectionName);
+
+            if (result)
+            {
+                ToolLoggingUtility.LogToolSuccess(_logger, toolName, methodName, $"Successfully deleted collection '{collectionName}'");
+            }
+            else
+            {
+                ToolLoggingUtility.LogToolFailure(_logger, toolName, methodName, "Failed to delete collection");
+            }
 
             return new
             {
@@ -53,7 +68,7 @@ public class ChromaDeleteCollectionTool
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error deleting collection");
+            ToolLoggingUtility.LogToolException(_logger, toolName, methodName, ex);
             return new
             {
                 success = false,

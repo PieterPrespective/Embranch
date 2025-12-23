@@ -4,6 +4,7 @@ using ModelContextProtocol.Server;
 using System.ComponentModel;
 using System.Reflection;
 using DMMS.Models;
+using DMMS.Utilities;
 
 namespace DMMS.Tools;
 
@@ -35,9 +36,13 @@ public class GetServerVersionTool
     [Description("Retrieves the current version of the DMMS MCP Server.")]
     public virtual Task<object> GetServerVersion()
     {
+        const string toolName = nameof(GetServerVersionTool);
+        const string methodName = nameof(GetServerVersion);
+        ToolLoggingUtility.LogToolStart(_logger, toolName, methodName, "Retrieving server version information");
+
         try
         {
-            _logger.LogInformation("Getting server version information");
+            ToolLoggingUtility.LogToolInfo(_logger, toolName, "Getting server version information");
             
             var assembly = Assembly.GetExecutingAssembly();
             var informationalVersion = assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion;
@@ -45,6 +50,7 @@ public class GetServerVersionTool
             var fileVersion = assembly.GetCustomAttribute<AssemblyFileVersionAttribute>()?.Version;
             var loggingEnabled = Environment.GetEnvironmentVariable("ENABLE_LOGGING") ?? "false";
 
+            ToolLoggingUtility.LogToolSuccess(_logger, toolName, methodName, "Server version retrieved successfully");
             return Task.FromResult<object>(new
             {
                 success = true,
@@ -66,7 +72,7 @@ public class GetServerVersionTool
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error getting server version");
+            ToolLoggingUtility.LogToolException(_logger, toolName, methodName, ex);
             return Task.FromResult<object>(new
             {
                 success = false,

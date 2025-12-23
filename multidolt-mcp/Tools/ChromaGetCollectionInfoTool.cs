@@ -2,6 +2,7 @@ using Microsoft.Extensions.Logging;
 using ModelContextProtocol.Server;
 using System.ComponentModel;
 using DMMS.Services;
+using DMMS.Utilities;
 
 namespace DMMS.Tools;
 
@@ -30,14 +31,30 @@ public class ChromaGetCollectionInfoTool
     [Description("Get detailed information about a specific collection including its configuration, metadata, and embedding function settings.")]
     public virtual async Task<object> GetCollectionInfo(string collection_name)
     {
+        const string toolName = nameof(ChromaGetCollectionInfoTool);
+        const string methodName = nameof(GetCollectionInfo);
+        ToolLoggingUtility.LogToolStart(_logger, toolName, methodName, $"collection_name: {collection_name}");
+
         try
         {
-            _logger.LogInformation($"[ChromaGetCollectionInfoTool.GetCollectionInfo] Getting info for collection: {collection_name}");
+            if (string.IsNullOrWhiteSpace(collection_name))
+            {
+                ToolLoggingUtility.LogToolFailure(_logger, toolName, methodName, "Collection name is required");
+                return new
+                {
+                    success = false,
+                    error = "COLLECTION_NAME_REQUIRED",
+                    message = "Collection name is required"
+                };
+            }
+
+            ToolLoggingUtility.LogToolInfo(_logger, toolName, $"Getting info for collection: {collection_name}");
 
             var collection = await _chromaService.GetCollectionAsync(collection_name);
             
             if (collection == null)
             {
+                ToolLoggingUtility.LogToolFailure(_logger, toolName, methodName, $"Collection '{collection_name}' does not exist");
                 return new
                 {
                     success = false,
@@ -49,6 +66,7 @@ public class ChromaGetCollectionInfoTool
             // Get document count
             var documentCount = await _chromaService.GetCollectionCountAsync(collection_name);
 
+            ToolLoggingUtility.LogToolSuccess(_logger, toolName, methodName, $"Retrieved info for collection '{collection_name}' with {documentCount} documents");
             return new
             {
                 success = true,
@@ -60,7 +78,7 @@ public class ChromaGetCollectionInfoTool
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, $"Error getting collection info for '{collection_name}'");
+            ToolLoggingUtility.LogToolException(_logger, toolName, methodName, ex);
             return new
             {
                 success = false,

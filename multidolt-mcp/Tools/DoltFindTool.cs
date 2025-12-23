@@ -2,6 +2,7 @@ using Microsoft.Extensions.Logging;
 using ModelContextProtocol.Server;
 using System.ComponentModel;
 using DMMS.Services;
+using DMMS.Utilities;
 
 namespace DMMS.Tools;
 
@@ -34,18 +35,24 @@ public class DoltFindTool
         string? branch = null,
         int limit = 10)
     {
+        const string toolName = nameof(DoltFindTool);
+        const string methodName = nameof(DoltFind);
+        
         try
         {
-            _logger.LogInformation($"[DoltFindTool.DoltFind] Searching for: {query}, type={search_type}, branch={branch}");
+            ToolLoggingUtility.LogToolStart(_logger, toolName, methodName, 
+                $"Query: '{query}', SearchType: '{search_type}', Branch: '{branch}', Limit: {limit}");
 
             // First check if Dolt is available
             var doltCheck = await _doltCli.CheckDoltAvailableAsync();
             if (!doltCheck.Success)
             {
+                const string error = "DOLT_EXECUTABLE_NOT_FOUND";
+                ToolLoggingUtility.LogToolFailure(_logger, toolName, methodName, error);
                 return new
                 {
                     success = false,
-                    error = "DOLT_EXECUTABLE_NOT_FOUND",
+                    error = error,
                     message = doltCheck.Error
                 };
             }
@@ -54,10 +61,12 @@ public class DoltFindTool
             var isInitialized = await _doltCli.IsInitializedAsync();
             if (!isInitialized)
             {
+                const string error = "NOT_INITIALIZED";
+                ToolLoggingUtility.LogToolFailure(_logger, toolName, methodName, error);
                 return new
                 {
                     success = false,
-                    error = "NOT_INITIALIZED",
+                    error = error,
                     message = "No Dolt repository configured. Use dolt_init or dolt_clone first."
                 };
             }
@@ -116,7 +125,7 @@ public class DoltFindTool
                 }
             }
 
-            return new
+            var response = new
             {
                 success = true,
                 query = query,
@@ -126,10 +135,14 @@ public class DoltFindTool
                     ? $"Found {results.Count} commits matching '{query}'"
                     : $"No commits found matching '{query}'"
             };
+            
+            ToolLoggingUtility.LogToolSuccess(_logger, toolName, methodName, 
+                $"Found {results.Count} commits matching '{query}'");
+            return response;
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, $"Error searching for commits with query '{query}'");
+            ToolLoggingUtility.LogToolException(_logger, toolName, methodName, ex);
             return new
             {
                 success = false,

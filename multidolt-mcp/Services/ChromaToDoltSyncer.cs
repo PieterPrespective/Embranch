@@ -42,6 +42,10 @@ namespace DMMS.Services
 
             try
             {
+                // Ensure schema tables exist before staging (for fresh/empty Dolt databases)
+                _logger?.LogDebug("Ensuring Dolt schema tables exist before staging");
+                await CreateSchemaTablesAsync();
+
                 // Detect local changes
                 var localChanges = await _detector.DetectLocalChangesAsync(collectionName);
                 
@@ -72,6 +76,10 @@ namespace DMMS.Services
 
             try
             {
+                // Ensure schema tables exist before staging (for fresh/empty Dolt databases)
+                _logger?.LogDebug("Ensuring Dolt schema tables exist before staging");
+                await CreateSchemaTablesAsync();
+
                 if (!localChanges.HasChanges)
                 {
                     _logger?.LogInformation("No pre-detected local changes to stage");
@@ -332,13 +340,8 @@ namespace DMMS.Services
 
             try
             {
-                // Update metadata to set is_local_change = false
-                var whereFilter = new Dictionary<string, object>
-                {
-                    ["source_id"] = docId
-                };
-
-                var results = await _chroma.GetDocumentsAsync(collectionName, where: whereFilter);
+                // Get the document by ID and update its metadata to set is_local_change = false
+                var results = await _chroma.GetDocumentsAsync(collectionName, ids: new List<string> { docId });
                 
                 if (results != null)
                 {
@@ -346,17 +349,24 @@ namespace DMMS.Services
                     var ids = (resultsDict.GetValueOrDefault("ids") as List<object>) ?? new List<object>();
                     var metadatas = (resultsDict.GetValueOrDefault("metadatas") as List<object>) ?? new List<object>();
                     
-                    // Update each chunk's metadata
-                    for (int i = 0; i < ids.Count; i++)
+                    if (ids.Count > 0 && metadatas.Count > 0)
                     {
-                        var chunkId = ids[i]?.ToString();
-                        var metadata = metadatas[i] as Dictionary<string, object> ?? new Dictionary<string, object>();
-                        
+                        var metadata = metadatas[0] as Dictionary<string, object> ?? new Dictionary<string, object>();
                         metadata["is_local_change"] = false;
                         
-                        // Update the chunk in ChromaDB
-                        await _chroma.UpdateDocumentsAsync(collectionName, new List<string> { chunkId! }, metadatas: new List<Dictionary<string, object>> { metadata });
+                        // Update the document's metadata in ChromaDB
+                        await _chroma.UpdateDocumentsAsync(collectionName, new List<string> { docId }, metadatas: new List<Dictionary<string, object>> { metadata });
+                        
+                        _logger?.LogDebug("Successfully cleared is_local_change flag for document {DocId}", docId);
                     }
+                    else
+                    {
+                        _logger?.LogWarning("Document {DocId} not found when trying to clear local change flag", docId);
+                    }
+                }
+                else
+                {
+                    _logger?.LogWarning("No results returned when looking for document {DocId} to clear local change flag", docId);
                 }
             }
             catch (Exception ex)

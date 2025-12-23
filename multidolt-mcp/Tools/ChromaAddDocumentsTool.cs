@@ -3,6 +3,7 @@ using ModelContextProtocol.Server;
 using System.ComponentModel;
 using System.Text.Json;
 using DMMS.Services;
+using DMMS.Utilities;
 
 namespace DMMS.Tools;
 
@@ -31,38 +32,47 @@ public class ChromaAddDocumentsTool
     [Description("Add documents to a Chroma collection.")]
     public virtual async Task<object> AddDocuments(string collectionName, string documentsJson, string idsJson, string? metadatasJson = null)
     {
+        const string toolName = nameof(ChromaAddDocumentsTool);
+        const string methodName = nameof(AddDocuments);
+        
         try
         {
+            // PP13-59: Safe logging implementation with standardized tool entry logging
+            ToolLoggingUtility.LogToolStart(_logger, toolName, methodName, 
+                $"Collection: '{collectionName}', Documents: {documentsJson?.Length ?? 0} chars, IDs: {idsJson?.Length ?? 0} chars, Metadata: {metadatasJson?.Length ?? 0} chars");
+
             if (string.IsNullOrWhiteSpace(collectionName))
             {
+                const string error = "Collection name is required";
+                ToolLoggingUtility.LogToolFailure(_logger, toolName, methodName, error);
                 return new
                 {
                     success = false,
-                    error = "Collection name is required"
+                    error = error
                 };
             }
 
             if (string.IsNullOrWhiteSpace(documentsJson))
             {
+                const string error = "Documents JSON is required";
+                ToolLoggingUtility.LogToolFailure(_logger, toolName, methodName, error);
                 return new
                 {
                     success = false,
-                    error = "Documents JSON is required"
+                    error = error
                 };
             }
 
             if (string.IsNullOrWhiteSpace(idsJson))
             {
+                const string error = "IDs JSON is required";
+                ToolLoggingUtility.LogToolFailure(_logger, toolName, methodName, error);
                 return new
                 {
                     success = false,
-                    error = "IDs JSON is required"
+                    error = error
                 };
             }
-
-            // PP13-56-C1: Enhanced logging for audit and debugging purposes
-            _logger.LogInformation($"[ChromaAddDocumentsTool] User request: Adding {documentsJson?.Length ?? 0} chars of documents JSON and {idsJson?.Length ?? 0} chars of IDs JSON to collection '{collectionName}'");
-            _logger.LogInformation($"[ChromaAddDocumentsTool] Metadata provided: {!string.IsNullOrWhiteSpace(metadatasJson)}, metadata length: {metadatasJson?.Length ?? 0} chars");
 
             List<string> documents;
             List<string> ids;
@@ -79,36 +89,42 @@ public class ChromaAddDocumentsTool
                 }
                 
                 // PP13-56-C1: Log document details for debugging and audit
-                _logger.LogInformation($"[ChromaAddDocumentsTool] Parsed {documents.Count} documents and {ids.Count} IDs");
+                ToolLoggingUtility.LogToolInfo(_logger, toolName, $"Parsed {documents.Count} documents and {ids.Count} IDs");
                 if (metadatas != null)
                 {
-                    _logger.LogInformation($"[ChromaAddDocumentsTool] Parsed {metadatas.Count} metadata entries");
+                    ToolLoggingUtility.LogToolInfo(_logger, toolName, $"Parsed {metadatas.Count} metadata entries");
                 }
             }
             catch (JsonException ex)
             {
+                var error = $"Invalid JSON format: {ex.Message}";
+                ToolLoggingUtility.LogToolFailure(_logger, toolName, methodName, error);
                 return new
                 {
                     success = false,
-                    error = $"Invalid JSON format: {ex.Message}"
+                    error = error
                 };
             }
 
             if (documents.Count != ids.Count)
             {
+                const string error = "Documents and IDs lists must have the same length";
+                ToolLoggingUtility.LogToolFailure(_logger, toolName, methodName, error);
                 return new
                 {
                     success = false,
-                    error = "Documents and IDs lists must have the same length"
+                    error = error
                 };
             }
 
             if (metadatas != null && metadatas.Count != documents.Count)
             {
+                const string error = "Metadatas list must have the same length as documents";
+                ToolLoggingUtility.LogToolFailure(_logger, toolName, methodName, error);
                 return new
                 {
                     success = false,
-                    error = "Metadatas list must have the same length as documents"
+                    error = error
                 };
             }
 
@@ -124,7 +140,7 @@ public class ChromaAddDocumentsTool
             }
             
             // PP13-56-C1: Add is_local_change=true to all metadata entries with enhanced logging
-            _logger.LogInformation($"[ChromaAddDocumentsTool] Processing {metadatas.Count} metadata entries for local change marking");
+            ToolLoggingUtility.LogToolInfo(_logger, toolName, $"Processing {metadatas.Count} metadata entries for local change marking");
             for (int i = 0; i < metadatas.Count; i++)
             {
                 var metadata = metadatas[i];
@@ -134,16 +150,16 @@ public class ChromaAddDocumentsTool
                 metadata["is_local_change"] = true;
                 
                 // Enhanced logging with document details
-                _logger.LogInformation($"[ChromaAddDocumentsTool] Document {i + 1}/{documents.Count}: ID='{documentId}', Content Length={contentLength} chars, Metadata Keys=[{string.Join(", ", metadata.Keys)}], is_local_change=true");
+                ToolLoggingUtility.LogToolInfo(_logger, toolName, $"Document {i + 1}/{documents.Count}: ID='{documentId}', Content Length={contentLength} chars, Metadata Keys=[{string.Join(", ", metadata.Keys)}], is_local_change=true");
                 
                 // Log metadata content for debugging (but limit size for readability)
                 var metadataJson = JsonSerializer.Serialize(metadata);
                 var truncatedMetadata = metadataJson.Length > 200 ? metadataJson.Substring(0, 200) + "..." : metadataJson;
-                _logger.LogDebug($"[ChromaAddDocumentsTool] Document '{documentId}' metadata: {truncatedMetadata}");
+                ToolLoggingUtility.LogToolDebug(_logger, toolName, $"Document '{documentId}' metadata: {truncatedMetadata}");
             }
 
             // PP13-56-C1: Log operation attempt and result
-            _logger.LogInformation($"[ChromaAddDocumentsTool] Attempting to add {documents.Count} documents to collection '{collectionName}' via ChromaDB service");
+            ToolLoggingUtility.LogToolInfo(_logger, toolName, $"Attempting to add {documents.Count} documents to collection '{collectionName}' via ChromaDB service");
             
             var startTime = DateTime.UtcNow;
             var result = await _chromaService.AddDocumentsAsync(collectionName, documents, ids, metadatas);
@@ -152,15 +168,15 @@ public class ChromaAddDocumentsTool
             // Enhanced result logging
             if (result)
             {
-                _logger.LogInformation($"[ChromaAddDocumentsTool] ✓ Successfully added {documents.Count} documents to collection '{collectionName}' in {duration.TotalMilliseconds:F1}ms");
-                _logger.LogInformation($"[ChromaAddDocumentsTool] Document IDs added: [{string.Join(", ", ids.Take(10))}{(ids.Count > 10 ? $" and {ids.Count - 10} more..." : "")}]");
+                ToolLoggingUtility.LogToolInfo(_logger, toolName, $"✓ Successfully added {documents.Count} documents to collection '{collectionName}' in {duration.TotalMilliseconds:F1}ms");
+                ToolLoggingUtility.LogToolInfo(_logger, toolName, $"Document IDs added: [{string.Join(", ", ids.Take(10))}{(ids.Count > 10 ? $" and {ids.Count - 10} more..." : "")}]");
             }
             else
             {
-                _logger.LogError($"[ChromaAddDocumentsTool] ❌ Failed to add {documents.Count} documents to collection '{collectionName}' after {duration.TotalMilliseconds:F1}ms");
+                ToolLoggingUtility.LogToolError(_logger, toolName, $"❌ Failed to add {documents.Count} documents to collection '{collectionName}' after {duration.TotalMilliseconds:F1}ms");
             }
 
-            return new
+            var response = new
             {
                 success = result,
                 message = result ? $"Successfully added {documents.Count} documents to collection '{collectionName}' in {duration.TotalMilliseconds:F1}ms" : "Failed to add documents",
@@ -169,10 +185,14 @@ public class ChromaAddDocumentsTool
                 duration_ms = duration.TotalMilliseconds,
                 document_ids = ids.Take(5).ToArray() // Include first 5 IDs in response
             };
+
+            var resultMessage = $"Added {documents.Count} documents to '{collectionName}' in {duration.TotalMilliseconds:F1}ms";
+            ToolLoggingUtility.LogToolSuccess(_logger, toolName, methodName, resultMessage);
+            return response;
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error adding documents");
+            ToolLoggingUtility.LogToolException(_logger, toolName, methodName, ex);
             return new
             {
                 success = false,

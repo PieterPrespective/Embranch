@@ -2,6 +2,7 @@ using Microsoft.Extensions.Logging;
 using ModelContextProtocol.Server;
 using System.ComponentModel;
 using DMMS.Services;
+using DMMS.Utilities;
 
 namespace DMMS.Tools;
 
@@ -32,18 +33,39 @@ public class DoltCommitTool
     [Description("Commit the current state of ChromaDB to the Dolt repository, creating a new version that can be pushed, shared, or reverted to.")]
     public virtual async Task<object> DoltCommit(string message, string? author = null)
     {
+        const string toolName = nameof(DoltCommitTool);
+        const string methodName = nameof(DoltCommit);
+        
         try
         {
-            _logger.LogInformation($"[DoltCommitTool.DoltCommit] Creating commit with message: {message}");
+            ToolLoggingUtility.LogToolStart(_logger, toolName, methodName, 
+                $"Message: '{message}', Author: '{author ?? "default"}''");
+
+            // Validate message
+            if (string.IsNullOrWhiteSpace(message))
+            {
+                const string error = "Commit message is required";
+                ToolLoggingUtility.LogToolFailure(_logger, toolName, methodName, error);
+                return new
+                {
+                    success = false,
+                    error = "MESSAGE_REQUIRED",
+                    message = error
+                };
+            }
+
+            ToolLoggingUtility.LogToolInfo(_logger, toolName, $"Creating commit with message: {message}");
 
             // First check if Dolt is available
             var doltCheck = await _doltCli.CheckDoltAvailableAsync();
             if (!doltCheck.Success)
             {
+                const string error = "DOLT_EXECUTABLE_NOT_FOUND";
+                ToolLoggingUtility.LogToolFailure(_logger, toolName, methodName, $"{error}: {doltCheck.Error}");
                 return new
                 {
                     success = false,
-                    error = "DOLT_EXECUTABLE_NOT_FOUND",
+                    error = error,
                     message = doltCheck.Error
                 };
             }
@@ -52,34 +74,30 @@ public class DoltCommitTool
             var isInitialized = await _doltCli.IsInitializedAsync();
             if (!isInitialized)
             {
+                const string error = "NOT_INITIALIZED";
+                const string errorMessage = "No Dolt repository configured. Use dolt_init or dolt_clone first.";
+                ToolLoggingUtility.LogToolFailure(_logger, toolName, methodName, $"{error}: {errorMessage}");
                 return new
                 {
                     success = false,
-                    error = "NOT_INITIALIZED",
-                    message = "No Dolt repository configured. Use dolt_init or dolt_clone first."
+                    error = error,
+                    message = errorMessage
                 };
             }
 
-            // Validate message
-            if (string.IsNullOrWhiteSpace(message))
-            {
-                return new
-                {
-                    success = false,
-                    error = "MESSAGE_REQUIRED",
-                    message = "Commit message is required"
-                };
-            }
 
             // Check for local changes
             var localChanges = await _syncManager.GetLocalChangesAsync();
             if (localChanges == null || !localChanges.HasChanges)
             {
+                const string error = "NO_CHANGES";
+                const string errorMessage = "Nothing to commit (no local changes)";
+                ToolLoggingUtility.LogToolFailure(_logger, toolName, methodName, $"{error}: {errorMessage}");
                 return new
                 {
                     success = false,
-                    error = "NO_CHANGES",
-                    message = "Nothing to commit (no local changes)"
+                    error = error,
+                    message = errorMessage
                 };
             }
 
@@ -87,15 +105,19 @@ public class DoltCommitTool
             var parentHash = await _doltCli.GetHeadCommitHashAsync();
 
             // Commit using sync manager (auto-stage enabled)
+            ToolLoggingUtility.LogToolInfo(_logger, toolName, $"Processing commit with {localChanges.TotalChanges} changes");
             var commitResult = await _syncManager.ProcessCommitAsync(message, true, false);
             
             if (!commitResult.Success)
             {
+                const string error = "COMMIT_FAILED";
+                var errorMessage = commitResult.ErrorMessage ?? "Failed to create commit";
+                ToolLoggingUtility.LogToolFailure(_logger, toolName, methodName, $"{error}: {errorMessage}");
                 return new
                 {
                     success = false,
-                    error = "COMMIT_FAILED",
-                    message = commitResult.ErrorMessage ?? "Failed to create commit"
+                    error = error,
+                    message = errorMessage
                 };
             }
 
@@ -103,7 +125,7 @@ public class DoltCommitTool
             var newCommitHash = await _doltCli.GetHeadCommitHashAsync();
             var timestamp = DateTime.UtcNow;
 
-            return new
+            var response = new
             {
                 success = true,
                 commit = new
@@ -124,10 +146,14 @@ public class DoltCommitTool
                 },
                 message = $"Created commit {newCommitHash?.Substring(0, 7)} with {localChanges.TotalChanges} document changes."
             };
+
+            var resultMessage = $"Created commit {newCommitHash?.Substring(0, 7)} with {localChanges.TotalChanges} changes";
+            ToolLoggingUtility.LogToolSuccess(_logger, toolName, methodName, resultMessage);
+            return response;
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error creating commit");
+            ToolLoggingUtility.LogToolException(_logger, toolName, methodName, ex);
             return new
             {
                 success = false,

@@ -57,4 +57,9 @@ public interface IChromaDbService
     /// Gets the count of documents in a collection
     /// </summary>
     Task<int> GetCollectionCountAsync(string collectionName);
+
+    /// <summary>
+    /// Gets the count of documents in a collection (alias for GetCollectionCountAsync for consistency)
+    /// </summary>
+    Task<int> GetDocumentCountAsync(string collectionName);
 }
