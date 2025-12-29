@@ -49,4 +49,9 @@ public class ServerConfiguration
     /// Local data directory path for persistent ChromaDB client
     /// </summary>
     public string ChromaDataPath { get; set; } = "./chroma_data";
+
+    /// <summary>
+    /// General data directory path for DMMS data files (deletion tracking, etc.)
+    /// </summary>
+    public string DataPath { get; set; } = "./data";
 }

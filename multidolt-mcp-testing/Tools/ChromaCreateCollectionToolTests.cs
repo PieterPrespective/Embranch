@@ -182,7 +182,7 @@ public class ChromaCreateCollectionToolTests
             l => l.Log(
                 LogLevel.Information,
                 It.IsAny<EventId>(),
-                It.Is<It.IsAnyType>((v, t) => v.ToString()!.Contains("'openai'")),
+                It.Is<It.IsAnyType>((v, t) => v.ToString()!.Contains("[ChromaCreateCollectionTool] Creating collection 'test_collection' with embedding function 'openai'")),
                 It.IsAny<Exception?>(),
                 It.IsAny<Func<It.IsAnyType, Exception?, string>>()),
             Times.Once);
@@ -207,7 +207,7 @@ public class ChromaCreateCollectionToolTests
             l => l.Log(
                 LogLevel.Error,
                 It.IsAny<EventId>(),
-                It.Is<It.IsAnyType>((v, t) => v.ToString()!.Contains("Error creating collection")),
+                It.Is<It.IsAnyType>((v, t) => v.ToString()!.Contains("TOOLCALL EXIT : CreateCollection - EXCEPTION")),
                 expectedException,
                 It.IsAny<Func<It.IsAnyType, Exception?, string>>()),
             Times.Once);

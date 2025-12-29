@@ -1,5 +1,6 @@
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using DMMS.Services;
 using DMMS.Tools;
 using DMMS.Models;
@@ -50,16 +51,38 @@ namespace DMMSTesting.IntegrationTests
                 options.EnableDebugLogging = true;
             });
 
+            // Configure ServerConfiguration - create instance first  
+            var serverConfig = new ServerConfiguration
+            {
+                ChromaDataPath = Path.Combine(_testWorkingDir, "chroma-data"),
+                DataPath = _testWorkingDir,
+                ChromaMode = "persistent"
+            };
+            
             // Configure unique ChromaDB path to prevent conflicts
             services.Configure<ServerConfiguration>(options =>
             {
-                options.ChromaDataPath = Path.Combine(_testWorkingDir, "chroma-data");
+                options.ChromaDataPath = serverConfig.ChromaDataPath;
+                options.DataPath = serverConfig.DataPath; 
+                options.ChromaMode = serverConfig.ChromaMode;
             });
 
             // Add required services
             services.AddLogging(builder => builder.AddConsole().SetMinimumLevel(LogLevel.Debug));
             services.AddSingleton<IDoltCli, DoltCli>();
-            services.AddSingleton<IChromaDbService, ChromaPersistentDbService>();
+            
+            // Add ServerConfiguration services for IDeletionTracker dependency
+            services.AddSingleton(serverConfig);
+            services.AddSingleton(Options.Create(serverConfig));
+            services.AddSingleton<IDeletionTracker, SqliteDeletionTracker>();
+            
+            // Use ChromaDbService instead of ChromaPersistentDbService for consistency  
+            services.AddSingleton<IChromaDbService>(sp => 
+            {
+                var loggerFactory = sp.GetRequiredService<ILoggerFactory>();
+                var serverConfigOptions = Options.Create(serverConfig);
+                return new ChromaDbService(loggerFactory.CreateLogger<ChromaDbService>(), serverConfigOptions);
+            });
             services.AddSingleton<ISyncManagerV2, SyncManagerV2>();
             services.AddSingleton<DoltCloneTool>();
             services.AddSingleton<DoltStatusTool>();

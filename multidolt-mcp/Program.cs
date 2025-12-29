@@ -1,6 +1,7 @@
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using System.Reflection;
 using DMMS.Logging;
 using DMMS.Models;
@@ -38,8 +39,23 @@ if (enableLogging)
     builder.Logging.SetMinimumLevel(logLevel);
 }
 
+// Create configuration instances first for proper dependency injection
+var serverConfig = new ServerConfiguration();
+ConfigurationUtility.GetServerConfiguration(serverConfig);
+
+var doltConfig = new DoltConfiguration();
+ConfigurationUtility.GetDoltConfiguration(doltConfig);
+
+// Register configuration instances and options for dependency injection
+// This ensures both IOptions<T> and direct instance injection work properly
 builder.Services.Configure<ServerConfiguration>(options => ConfigurationUtility.GetServerConfiguration(options));
 builder.Services.Configure<DoltConfiguration>(options => ConfigurationUtility.GetDoltConfiguration(options));
+
+// Register configuration instances for direct injection (required by SqliteDeletionTracker)
+builder.Services.AddSingleton(serverConfig);
+builder.Services.AddSingleton(Options.Create(serverConfig));
+builder.Services.AddSingleton(doltConfig);
+builder.Services.AddSingleton(Options.Create(doltConfig));
 
 // Register both implementations
 builder.Services.AddSingleton<ChromaDbService>();
@@ -51,6 +67,9 @@ builder.Services.AddSingleton<IChromaDbService>(serviceProvider =>
 // Register Dolt services
 builder.Services.AddSingleton<IDoltCli, DoltCli>();
 builder.Services.AddSingleton<ISyncManagerV2, SyncManagerV2>();
+
+// Register deletion tracking service
+builder.Services.AddSingleton<IDeletionTracker, SqliteDeletionTracker>();
 
 builder.Services
     .AddMcpServer()
@@ -96,6 +115,31 @@ builder.Services
     .WithTools<DoltResetTool>();
 
 var host = builder.Build();
+
+// Initialize deletion tracker during startup
+try 
+{
+    var deletionTracker = host.Services.GetRequiredService<IDeletionTracker>();
+    var doltConfiguration = host.Services.GetRequiredService<DoltConfiguration>();
+    
+    // Initialize deletion tracker with the repository path
+    await deletionTracker.InitializeAsync(doltConfiguration.RepositoryPath);
+    
+    if (enableLogging)
+    {
+        var logger = host.Services.GetService<ILogger<Program>>();
+        logger?.LogInformation("Deletion tracker initialized successfully for repository: {RepositoryPath}", doltConfiguration.RepositoryPath);
+    }
+}
+catch (Exception ex)
+{
+    if (enableLogging)
+    {
+        var logger = host.Services.GetService<ILogger<Program>>();
+        logger?.LogError(ex, "Failed to initialize deletion tracker: {Error}", ex.Message);
+    }
+    throw; // Don't continue if deletion tracker fails to initialize
+}
 
 if (enableLogging)
 {
@@ -167,6 +211,7 @@ public static class ConfigurationUtility
         options.ChromaPort = int.TryParse(Environment.GetEnvironmentVariable("CHROMA_PORT"), out var chromaPort) ? chromaPort : 8000;
         options.ChromaMode = Environment.GetEnvironmentVariable("CHROMA_MODE") ?? "persistent";
         options.ChromaDataPath = Environment.GetEnvironmentVariable("CHROMA_DATA_PATH") ?? "./chroma_data";
+        options.DataPath = Environment.GetEnvironmentVariable("DMMS_DATA_PATH") ?? "./data";
         
         return options;
     }

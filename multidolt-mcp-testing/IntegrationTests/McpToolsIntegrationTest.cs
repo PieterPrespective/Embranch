@@ -96,7 +96,7 @@ namespace DMMSTesting.IntegrationTests
             user.ChromaUpdateDocumentsTool = new ChromaUpdateDocumentsTool(
                 loggerFactory.CreateLogger<ChromaUpdateDocumentsTool>(), user.ChromaService);
             user.ChromaDeleteDocumentsTool = new ChromaDeleteDocumentsTool(
-                loggerFactory.CreateLogger<ChromaDeleteDocumentsTool>(), user.ChromaService);
+                loggerFactory.CreateLogger<ChromaDeleteDocumentsTool>(), user.ChromaService, user.DeletionTracker, user.DoltCli, Options.Create(user.DoltConfig));
             user.ChromaPeekCollectionTool = new ChromaPeekCollectionTool(
                 loggerFactory.CreateLogger<ChromaPeekCollectionTool>(), user.ChromaService);
                 
@@ -698,7 +698,9 @@ namespace DMMSTesting.IntegrationTests
         // Backend services
         public IChromaDbService ChromaService { get; private set; } = null!;
         public IDoltCli DoltCli { get; private set; } = null!;
+        public IDeletionTracker DeletionTracker { get; private set; } = null!;
         public ISyncManagerV2 SyncManager { get; private set; } = null!;
+        public DMMS.Models.DoltConfiguration DoltConfig { get; private set; } = null!;
         
         // MCP Tool instances
         public ChromaCreateCollectionTool? ChromaCreateCollectionTool;
@@ -738,23 +740,28 @@ namespace DMMSTesting.IntegrationTests
             // Create ChromaDB service
             var chromaConfig = Options.Create(new DMMS.Models.ServerConfiguration
             {
-                ChromaDataPath = ChromaPath
+                ChromaDataPath = ChromaPath,
+                DataPath = Path.GetDirectoryName(ChromaPath)
             });
             var chromaLogger = LoggerFactory.Create(b => b.AddConsole()).CreateLogger<ChromaPythonService>();
             ChromaService = new ChromaPythonService(chromaLogger, chromaConfig);
             
             // Create Dolt CLI
-            var doltConfig = new DMMS.Models.DoltConfiguration
+            DoltConfig = new DMMS.Models.DoltConfiguration
             {
                 RepositoryPath = DoltRepoPath,
                 DoltExecutablePath = "dolt"
             };
             var doltLogger = LoggerFactory.Create(b => b.AddConsole()).CreateLogger<DoltCli>();
-            DoltCli = new DoltCli(Options.Create(doltConfig), doltLogger);
+            DoltCli = new DoltCli(Options.Create(DoltConfig), doltLogger);
+            
+            // Create deletion tracker
+            var deletionTrackerLogger = LoggerFactory.Create(b => b.AddConsole()).CreateLogger<SqliteDeletionTracker>();
+            DeletionTracker = new SqliteDeletionTracker(deletionTrackerLogger, chromaConfig.Value);
             
             // Create V2 sync manager
             var syncLogger = LoggerFactory.Create(b => b.AddConsole()).CreateLogger<SyncManagerV2>();
-            SyncManager = new SyncManagerV2(DoltCli, ChromaService, syncLogger);
+            SyncManager = new SyncManagerV2(DoltCli, ChromaService, DeletionTracker, Options.Create(DoltConfig), syncLogger);
         }
         
         public void Dispose()

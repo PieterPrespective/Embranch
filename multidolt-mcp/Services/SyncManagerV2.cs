@@ -6,6 +6,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using DMMS.Models;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 
 namespace DMMS.Services
 {
@@ -25,6 +26,8 @@ namespace DMMS.Services
         public SyncManagerV2(
             IDoltCli dolt,
             IChromaDbService chromaService,
+            IDeletionTracker deletionTracker,
+            IOptions<DoltConfiguration> doltConfig,
             ILogger<SyncManagerV2> logger)
         {
             _dolt = dolt;
@@ -33,7 +36,7 @@ namespace DMMS.Services
             
             // Initialize detectors and syncers
             _deltaDetector = new DeltaDetectorV2(dolt, logger: null);
-            _chromaToDoltDetector = new ChromaToDoltDetector(chromaService, dolt, logger: null);
+            _chromaToDoltDetector = new ChromaToDoltDetector(chromaService, dolt, deletionTracker, doltConfig, logger: null);
             
             // Create a logger for ChromaToDoltSyncer so we can debug the document retrieval issue
             var loggerFactory = LoggerFactory.Create(builder => builder.AddConsole());

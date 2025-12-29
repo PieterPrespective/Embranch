@@ -104,6 +104,32 @@ public class ChromaUpdateDocumentsTool
                 };
             }
 
+            // Enhance metadata with local change flag and content hash
+            if (metadatas == null)
+            {
+                metadatas = ids.Select(_ => new Dictionary<string, object>()).ToList();
+            }
+
+            for (int i = 0; i < metadatas.Count; i++)
+            {
+                // Set local change flag
+                metadatas[i]["is_local_change"] = true;
+                
+                // Calculate and store content hash if document content is being updated
+                if (documents != null && i < documents.Count)
+                {
+                    var contentHash = DocumentConverterUtilityV2.CalculateContentHash(documents[i]);
+                    metadatas[i]["content_hash"] = contentHash;
+                    
+                    // Log the update for audit trail
+                    _logger.LogInformation($"UpdateDocuments: Document {ids[i]} content hash updated to {contentHash}");
+                }
+                
+                // Add update metadata
+                metadatas[i]["last_updated"] = DateTime.UtcNow.ToString("O");
+                metadatas[i]["update_source"] = "mcp_tool";
+            }
+
             // Update documents
             await _chromaService.UpdateDocumentsAsync(
                 collection_name,

@@ -69,15 +69,26 @@ namespace DMMS.Testing.IntegrationTests
             await _doltCli.InitAsync();
 
             // Initialize ChromaDB
-            var serverConfig = Options.Create(new ServerConfiguration { ChromaDataPath = _chromaDataPath });
+            var serverConfig = Options.Create(new ServerConfiguration 
+            { 
+                ChromaDataPath = _chromaDataPath,
+                DataPath = _testDir 
+            });
             _chromaService = new ChromaDbService(
                 loggerFactory.CreateLogger<ChromaDbService>(), 
                 serverConfig);
+
+            // Initialize deletion tracker
+            var deletionTracker = new SqliteDeletionTracker(
+                loggerFactory.CreateLogger<SqliteDeletionTracker>(),
+                serverConfig.Value);
 
             // Initialize ChromaToDolt components
             _chromaDetector = new ChromaToDoltDetector(
                 _chromaService,
                 _doltCli,
+                deletionTracker,
+                doltConfig,
                 loggerFactory.CreateLogger<ChromaToDoltDetector>());
 
             _chromaSyncer = new ChromaToDoltSyncer(
@@ -90,6 +101,8 @@ namespace DMMS.Testing.IntegrationTests
             _syncManager = new SyncManagerV2(
                 _doltCli,
                 _chromaService,
+                deletionTracker,
+                doltConfig,
                 loggerFactory.CreateLogger<SyncManagerV2>());
 
             _logger.LogInformation("✅ Setup complete");

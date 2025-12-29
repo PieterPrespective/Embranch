@@ -6,6 +6,7 @@ using System.Text;
 using System.Threading.Tasks;
 using DMMS.Models;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 
 namespace DMMS.Services
 {
@@ -18,15 +19,21 @@ namespace DMMS.Services
     {
         private readonly IChromaDbService _chroma;
         private readonly IDoltCli _dolt;
+        private readonly IDeletionTracker _deletionTracker;
+        private readonly DoltConfiguration _doltConfig;
         private readonly ILogger<ChromaToDoltDetector>? _logger;
 
         public ChromaToDoltDetector(
             IChromaDbService chroma,
             IDoltCli dolt,
+            IDeletionTracker deletionTracker,
+            IOptions<DoltConfiguration> doltConfig,
             ILogger<ChromaToDoltDetector>? logger = null)
         {
             _chroma = chroma;
             _dolt = dolt;
+            _deletionTracker = deletionTracker;
+            _doltConfig = doltConfig.Value;
             _logger = logger;
         }
 
@@ -308,32 +315,50 @@ namespace DMMS.Services
 
             try
             {
-                // Get all document IDs from Dolt
-                var doltDocs = await GetDoltDocumentsAsync(collectionName);
-                
-                // Get all document IDs from ChromaDB
-                var chromaIds = await GetChromaDocumentIdsAsync(collectionName);
-                
-                // Find documents in Dolt but not in ChromaDB
                 var deleted = new List<DeletedDocumentV2>();
+                
+                // STEP 1: Check deletion tracking database for pending deletions
+                _logger?.LogDebug("Checking deletion tracking database for pending deletions");
+                var pendingDeletions = await _deletionTracker.GetPendingDeletionsAsync(_doltConfig.RepositoryPath, collectionName);
+                
+                foreach (var deletion in pendingDeletions)
+                {
+                    _logger?.LogDebug("Found pending deletion from tracking: {DocId}", deletion.DocId);
+                    deleted.Add(new DeletedDocumentV2(
+                        deletion.DocId, 
+                        collectionName, 
+                        System.Text.Json.JsonSerializer.Serialize(new List<string>()), // Will be filled during sync
+                        deletion.OriginalContentHash
+                    ));
+                }
+                
+                // STEP 2: Fallback - Find documents in Dolt but not in ChromaDB (traditional approach)
+                _logger?.LogDebug("Running fallback deletion detection - comparing Dolt vs ChromaDB");
+                var doltDocs = await GetDoltDocumentsAsync(collectionName);
+                var chromaIds = await GetChromaDocumentIdsAsync(collectionName);
                 
                 foreach (var doltDoc in doltDocs)
                 {
                     if (!chromaIds.Contains(doltDoc.DocId))
                     {
-                        // Get chunk IDs from sync log for cleanup
-                        var chunkIds = await GetChunkIdsFromSyncLogAsync(doltDoc.DocId, collectionName);
-                        
-                        deleted.Add(new DeletedDocumentV2
+                        // Only add if not already tracked by deletion tracking
+                        if (!deleted.Any(d => d.DocId == doltDoc.DocId))
                         {
-                            DocId = doltDoc.DocId,
-                            CollectionName = collectionName,
-                            ChunkIds = System.Text.Json.JsonSerializer.Serialize(chunkIds)
-                        });
+                            // Get chunk IDs from sync log for cleanup
+                            var chunkIds = await GetChunkIdsFromSyncLogAsync(doltDoc.DocId, collectionName);
+                            
+                            _logger?.LogDebug("Found deleted document via fallback detection: {DocId}", doltDoc.DocId);
+                            deleted.Add(new DeletedDocumentV2(
+                                doltDoc.DocId,
+                                collectionName,
+                                System.Text.Json.JsonSerializer.Serialize(chunkIds)
+                            ));
+                        }
                     }
                 }
                 
-                _logger?.LogDebug("Found {Count} deleted documents", deleted.Count);
+                _logger?.LogDebug("Found {Count} deleted documents total ({TrackedCount} from tracking, {FallbackCount} from fallback)", 
+                    deleted.Count, pendingDeletions.Count, deleted.Count - pendingDeletions.Count);
                 return deleted;
             }
             catch (Exception ex)
@@ -484,7 +509,24 @@ namespace DMMS.Services
                 
                 foreach (var row in results)
                 {
-                    hashes[row.doc_id] = row.content_hash;
+                    // Handle both JsonElement and dynamic types
+                    string docId, contentHash;
+                    
+                    if (row is System.Text.Json.JsonElement jsonElement)
+                    {
+                        docId = jsonElement.TryGetProperty("doc_id", out var docIdProp) ? docIdProp.GetString() ?? "" : "";
+                        contentHash = jsonElement.TryGetProperty("content_hash", out var contentHashProp) ? contentHashProp.GetString() ?? "" : "";
+                    }
+                    else
+                    {
+                        docId = (string)row.doc_id;
+                        contentHash = (string)row.content_hash;
+                    }
+                    
+                    if (!string.IsNullOrEmpty(docId) && !string.IsNullOrEmpty(contentHash))
+                    {
+                        hashes[docId] = contentHash;
+                    }
                 }
                 
                 return hashes;
@@ -524,7 +566,31 @@ namespace DMMS.Services
             try
             {
                 var results = await _dolt.QueryAsync<dynamic>(sql);
-                return results.Select(r => ((string)r.doc_id, (string)r.content_hash)).ToList();
+                var documents = new List<(string DocId, string ContentHash)>();
+                
+                foreach (var row in results)
+                {
+                    // Handle both JsonElement and dynamic types
+                    string docId, contentHash;
+                    
+                    if (row is System.Text.Json.JsonElement jsonElement)
+                    {
+                        docId = jsonElement.TryGetProperty("doc_id", out var docIdProp) ? docIdProp.GetString() ?? "" : "";
+                        contentHash = jsonElement.TryGetProperty("content_hash", out var contentHashProp) ? contentHashProp.GetString() ?? "" : "";
+                    }
+                    else
+                    {
+                        docId = (string)row.doc_id;
+                        contentHash = (string)row.content_hash;
+                    }
+                    
+                    if (!string.IsNullOrEmpty(docId) && !string.IsNullOrEmpty(contentHash))
+                    {
+                        documents.Add((docId, contentHash));
+                    }
+                }
+                
+                return documents;
             }
             catch (DoltException ex) when (ex.Message.Contains("table not found"))
             {

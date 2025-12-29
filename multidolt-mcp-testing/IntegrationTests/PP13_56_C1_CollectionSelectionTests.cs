@@ -5,6 +5,7 @@ using System.Linq;
 using System.Threading.Tasks;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using NUnit.Framework;
 using DMMS.Models;
 using DMMS.Services;
@@ -61,16 +62,38 @@ namespace DMMSTesting.IntegrationTests
                 options.EnableDebugLogging = true;
             });
 
+            // Configure ServerConfiguration - create instance first  
+            var serverConfig = new ServerConfiguration
+            {
+                ChromaDataPath = _chromaDbPath,
+                DataPath = _testDirectory,
+                ChromaMode = "persistent"
+            };
+            
             // Configure unique ChromaDB path to prevent conflicts
             services.Configure<ServerConfiguration>(options =>
             {
-                options.ChromaDataPath = _chromaDbPath;
+                options.ChromaDataPath = serverConfig.ChromaDataPath;
+                options.DataPath = serverConfig.DataPath;
+                options.ChromaMode = serverConfig.ChromaMode;
             });
 
             // Add required services
             services.AddLogging(builder => builder.AddConsole().SetMinimumLevel(LogLevel.Information));
             services.AddSingleton<IDoltCli, DoltCli>();
-            services.AddSingleton<IChromaDbService, ChromaPersistentDbService>();
+            
+            // Add ServerConfiguration services for IDeletionTracker dependency
+            services.AddSingleton(serverConfig);
+            services.AddSingleton(Options.Create(serverConfig));
+            services.AddSingleton<IDeletionTracker, SqliteDeletionTracker>();
+            
+            // Use ChromaDbService instead of ChromaPersistentDbService for consistency
+            services.AddSingleton<IChromaDbService>(sp => 
+            {
+                var loggerFactory = sp.GetRequiredService<ILoggerFactory>();
+                var serverConfigOptions = Options.Create(serverConfig);
+                return new ChromaDbService(loggerFactory.CreateLogger<ChromaDbService>(), serverConfigOptions);
+            });
             services.AddSingleton<ChromaAddDocumentsTool>();
 
             _serviceProvider = services.BuildServiceProvider();
@@ -80,7 +103,9 @@ namespace DMMSTesting.IntegrationTests
             
             // Create detector using the same logger factory from DI container
             var loggerFactory = _serviceProvider.GetRequiredService<ILoggerFactory>();
-            _detector = new ChromaToDoltDetector(_chromaService, _doltCli, loggerFactory.CreateLogger<ChromaToDoltDetector>());
+            var deletionTracker = _serviceProvider.GetRequiredService<IDeletionTracker>();
+            var doltConfig = _serviceProvider.GetRequiredService<IOptions<DoltConfiguration>>();
+            _detector = new ChromaToDoltDetector(_chromaService, _doltCli, deletionTracker, doltConfig, loggerFactory.CreateLogger<ChromaToDoltDetector>());
             
             // Create standalone logger using the same logger factory
             _logger = loggerFactory.CreateLogger<PP13_56_C1_CollectionSelectionTests>();

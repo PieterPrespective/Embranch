@@ -109,14 +109,16 @@ namespace DMMS.Models
         public string DocId { get; set; } = "";
         public string CollectionName { get; set; } = "";
         public string ChunkIds { get; set; } = "[]";     // JSON array of chunk IDs
+        public string? OriginalContentHash { get; set; } // Content hash from deletion tracking
         
         public DeletedDocumentV2() { }
         
-        public DeletedDocumentV2(string docId, string collectionName, string chunkIds)
+        public DeletedDocumentV2(string docId, string collectionName, string chunkIds, string? originalContentHash = null)
         {
             DocId = docId;
             CollectionName = collectionName;
             ChunkIds = chunkIds;
+            OriginalContentHash = originalContentHash;
         }
         
         public List<string> GetChunkIdList()

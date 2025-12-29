@@ -62,17 +62,25 @@ namespace DMMS.Testing.IntegrationTests
             Directory.CreateDirectory(chromaDataPath);
             var serverConfig = Options.Create(new ServerConfiguration 
             { 
-                ChromaDataPath = chromaDataPath
+                ChromaDataPath = chromaDataPath,
+                DataPath = _tempDir
             });
             _chromaService = new ChromaDbService(
                 loggerFactory.CreateLogger<ChromaDbService>(), 
                 serverConfig
             );
 
+            // Initialize deletion tracker
+            var deletionTracker = new SqliteDeletionTracker(
+                loggerFactory.CreateLogger<SqliteDeletionTracker>(),
+                serverConfig.Value);
+                
             // Initialize sync manager and other components
             _syncManager = new SyncManagerV2(
                 _doltCli, 
                 _chromaService,
+                deletionTracker,
+                doltConfig,
                 loggerFactory.CreateLogger<SyncManagerV2>()
             );
 

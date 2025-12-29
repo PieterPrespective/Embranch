@@ -161,7 +161,7 @@ public class ChromaListCollectionsToolTests
             l => l.Log(
                 LogLevel.Error,
                 It.IsAny<EventId>(),
-                It.Is<It.IsAnyType>((v, t) => v.ToString()!.Contains("Error listing collections")),
+                It.Is<It.IsAnyType>((v, t) => v.ToString()!.Contains("TOOLCALL EXIT : ListCollections - EXCEPTION")),
                 expectedException,
                 It.IsAny<Func<It.IsAnyType, Exception?, string>>()),
             Times.Once);

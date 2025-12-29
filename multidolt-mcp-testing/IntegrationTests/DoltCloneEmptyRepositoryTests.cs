@@ -82,14 +82,19 @@ namespace DMMSTesting.IntegrationTests
             // Setup ChromaDB service for target
             var chromaConfig = Options.Create(new ServerConfiguration
             {
-                ChromaDataPath = Path.Combine(_targetRepoPath, "chroma_data")
+                ChromaDataPath = Path.Combine(_targetRepoPath, "chroma_data"),
+                DataPath = _targetRepoPath
             });
             var chromaLogger = loggerFactory.CreateLogger<ChromaPythonService>();
             _chromaService = new ChromaPythonService(chromaLogger, chromaConfig);
 
+            // Setup deletion tracker
+            var deletionTrackerLogger = loggerFactory.CreateLogger<SqliteDeletionTracker>();
+            var deletionTracker = new SqliteDeletionTracker(deletionTrackerLogger, chromaConfig.Value);
+            
             // Setup sync manager
             var syncLogger = loggerFactory.CreateLogger<SyncManagerV2>();
-            _syncManager = new SyncManagerV2(_targetDoltCli, _chromaService, syncLogger);
+            _syncManager = new SyncManagerV2(_targetDoltCli, _chromaService, deletionTracker, targetConfig, syncLogger);
 
             // Create clone tool
             var cloneLogger = loggerFactory.CreateLogger<DoltCloneTool>();

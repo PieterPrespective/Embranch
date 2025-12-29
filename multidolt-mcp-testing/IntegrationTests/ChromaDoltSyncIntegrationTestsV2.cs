@@ -925,7 +925,8 @@ namespace DMMSTesting.IntegrationTests
             // Create ChromaDB service
             var chromaConfig = Options.Create(new ServerConfiguration
             {
-                ChromaDataPath = ChromaPath
+                ChromaDataPath = ChromaPath,
+                DataPath = Path.GetDirectoryName(ChromaPath)
             });
             var chromaLogger = LoggerFactory.Create(b => b.AddConsole()).CreateLogger<ChromaPythonService>();
             ChromaService = new ChromaPythonService(chromaLogger, chromaConfig);
@@ -939,15 +940,19 @@ namespace DMMSTesting.IntegrationTests
             var doltLogger = LoggerFactory.Create(b => b.AddConsole()).CreateLogger<DoltCli>();
             DoltCli = new DoltCli(Options.Create(doltConfig), doltLogger);
             
+            // Create deletion tracker
+            var deletionTrackerLogger = LoggerFactory.Create(b => b.AddConsole()).CreateLogger<SqliteDeletionTracker>();
+            var deletionTracker = new SqliteDeletionTracker(deletionTrackerLogger, chromaConfig.Value);
+            
             // Create V2 services with proper logging
             var loggerFactory = LoggerFactory.Create(b => b.AddConsole().SetMinimumLevel(LogLevel.Information));
             var syncLogger = loggerFactory.CreateLogger<SyncManagerV2>();
             var detectorLogger = loggerFactory.CreateLogger<ChromaToDoltDetector>();
             var syncerLogger = loggerFactory.CreateLogger<ChromaToDoltSyncer>();
             
-            SyncManager = new SyncManagerV2(DoltCli, ChromaService, syncLogger);
+            SyncManager = new SyncManagerV2(DoltCli, ChromaService, deletionTracker, Options.Create(doltConfig), syncLogger);
             
-            var detector = new ChromaToDoltDetector(ChromaService, DoltCli, detectorLogger);
+            var detector = new ChromaToDoltDetector(ChromaService, DoltCli, deletionTracker, Options.Create(doltConfig), detectorLogger);
             ChromaToDoltSyncer = new ChromaToDoltSyncer(ChromaService, DoltCli, detector, syncerLogger);
         }
 
