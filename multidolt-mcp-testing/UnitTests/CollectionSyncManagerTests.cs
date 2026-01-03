@@ -36,6 +36,42 @@ public class CollectionSyncManagerTests
             RepositoryPath = "/test/repo"
         };
         _mockDoltOptions.Setup(x => x.Value).Returns(_doltConfig);
+        
+        // CRITICAL: Setup Dolt initialization check - without this, many operations may fail
+        _mockDoltCli.Setup(x => x.IsInitializedAsync()).ReturnsAsync(true);
+        
+        // Setup global mocks for all SQL operations that SyncManagerV2 may perform
+        // Mock SHOW TABLES query
+        var mockTables = new List<Dictionary<string, object>>
+        {
+            new() { ["Tables_in_database"] = "collections" },
+            new() { ["Tables_in_database"] = "documents" }
+        };
+        _mockDoltCli.Setup(x => x.QueryAsync<Dictionary<string, object>>(
+            It.Is<string>(sql => sql.Contains("SHOW TABLES"))))
+            .ReturnsAsync(mockTables);
+            
+        // Mock DELETE operations (documents and collections)
+        _mockDoltCli.Setup(x => x.QueryAsync<object>(
+            It.Is<string>(sql => sql.Contains("DELETE FROM documents"))))
+            .ReturnsAsync(new List<object>());
+            
+        _mockDoltCli.Setup(x => x.QueryAsync<object>(
+            It.Is<string>(sql => sql.Contains("DELETE FROM collections"))))
+            .ReturnsAsync(new List<object>());
+            
+        // Mock UPDATE operations (for renames and metadata updates)
+        _mockDoltCli.Setup(x => x.QueryAsync<object>(
+            It.Is<string>(sql => sql.Contains("UPDATE collections SET collection_name"))))
+            .ReturnsAsync(new List<object>());
+            
+        _mockDoltCli.Setup(x => x.QueryAsync<object>(
+            It.Is<string>(sql => sql.Contains("UPDATE documents SET collection_name"))))
+            .ReturnsAsync(new List<object>());
+            
+        _mockDoltCli.Setup(x => x.QueryAsync<object>(
+            It.Is<string>(sql => sql.Contains("UPDATE collections SET metadata"))))
+            .ReturnsAsync(new List<object>());
 
         _syncManager = new SyncManagerV2(
             _mockDoltCli.Object,
@@ -81,7 +117,7 @@ public class CollectionSyncManagerTests
         _mockDeletionTracker.Setup(x => x.GetPendingCollectionDeletionsAsync(_doltConfig.RepositoryPath))
             .ReturnsAsync(new List<CollectionDeletionRecord> { deletionRecord });
 
-        // Mock document query for cascade deletion
+        // Mock test-specific document query for cascade deletion
         var mockDocuments = new List<Dictionary<string, object>>
         {
             new() { ["doc_id"] = "doc1" },
@@ -112,7 +148,7 @@ public class CollectionSyncManagerTests
         
         // Verify collection deletion
         _mockDoltCli.Verify(x => x.QueryAsync<object>(
-            "DELETE FROM collections WHERE name = 'test-collection'"), Times.Once);
+            "DELETE FROM collections WHERE collection_name = 'test-collection'"), Times.Once);
         
         // Verify commit
         _mockDoltCli.Verify(x => x.CommitAsync(
@@ -156,7 +192,7 @@ public class CollectionSyncManagerTests
 
         // Verify collection table update
         _mockDoltCli.Verify(x => x.QueryAsync<object>(
-            "UPDATE collections SET name = 'new-collection' WHERE name = 'old-collection'"), Times.Once);
+            "UPDATE collections SET collection_name = 'new-collection' WHERE collection_name = 'old-collection'"), Times.Once);
         
         // Verify documents table update
         _mockDoltCli.Verify(x => x.QueryAsync<object>(
@@ -261,9 +297,9 @@ public class CollectionSyncManagerTests
 
         // Verify all operations were called
         _mockDoltCli.Verify(x => x.QueryAsync<object>(
-            "DELETE FROM collections WHERE name = 'delete-me'"), Times.Once);
+            "DELETE FROM collections WHERE collection_name = 'delete-me'"), Times.Once);
         _mockDoltCli.Verify(x => x.QueryAsync<object>(
-            "UPDATE collections SET name = 'renamed' WHERE name = 'rename-me'"), Times.Once);
+            "UPDATE collections SET collection_name = 'renamed' WHERE collection_name = 'rename-me'"), Times.Once);
         _mockDoltCli.Verify(x => x.QueryAsync<object>(
             It.Is<string>(sql => sql.Contains("UPDATE collections SET metadata") && 
                                 sql.Contains("update-me"))), Times.Once);

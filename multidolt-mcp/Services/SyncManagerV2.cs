@@ -774,9 +774,9 @@ namespace DMMS.Services
 
         #region Merge Processing
 
-        public async Task<MergeSyncResultV2> ProcessMergeAsync(string sourceBranch, bool force = false)
+        public async Task<Services.MergeSyncResultV2> ProcessMergeAsync(string sourceBranch, bool force = false, List<ConflictResolutionRequest>? resolutions = null)
         {
-            var result = new MergeSyncResultV2 { Direction = SyncDirection.DoltToChroma };
+            var result = new Services.MergeSyncResultV2();
             var targetBranch = await _dolt.GetCurrentBranchAsync();
             var beforeCommit = await _dolt.GetHeadCommitHashAsync();
 

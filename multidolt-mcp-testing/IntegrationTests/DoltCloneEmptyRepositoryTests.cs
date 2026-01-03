@@ -88,9 +88,10 @@ namespace DMMSTesting.IntegrationTests
             var chromaLogger = loggerFactory.CreateLogger<ChromaPythonService>();
             _chromaService = new ChromaPythonService(chromaLogger, chromaConfig);
 
-            // Setup deletion tracker
+            // Setup deletion tracker and initialize its database schema
             var deletionTrackerLogger = loggerFactory.CreateLogger<SqliteDeletionTracker>();
             var deletionTracker = new SqliteDeletionTracker(deletionTrackerLogger, chromaConfig.Value);
+            deletionTracker.InitializeAsync(_targetRepoPath).GetAwaiter().GetResult();
             
             // Setup sync manager
             var syncLogger = loggerFactory.CreateLogger<SyncManagerV2>();

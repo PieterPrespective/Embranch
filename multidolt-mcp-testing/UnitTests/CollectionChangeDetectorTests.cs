@@ -56,6 +56,11 @@ namespace DMMS.UnitTests
                 .Setup(x => x.InitializeAsync(It.IsAny<string>()))
                 .Returns(Task.CompletedTask);
             
+            // CRITICAL: Setup Dolt initialization check - without this, GetDoltCollectionsAsync returns empty list
+            _mockDoltCli
+                .Setup(x => x.IsInitializedAsync())
+                .ReturnsAsync(true);
+            
             // Note: ValidateSchemaAsync doesn't exist on IDeletionTracker interface
             // The CollectionChangeDetector will use GetPendingCollectionDeletionsAsync for validation
             

@@ -270,5 +270,32 @@ namespace DMMS.Services
         /// <param name="args">The command arguments to pass to dolt</param>
         /// <returns>Raw command result from Dolt</returns>
         Task<DoltCommandResult> ExecuteRawCommandAsync(params string[] args);
+        
+        // ==================== Enhanced Merge Operations ====================
+        
+        /// <summary>
+        /// Preview merge conflicts without performing the actual merge
+        /// Uses Dolt's DOLT_PREVIEW_MERGE_CONFLICTS_SUMMARY function if available
+        /// </summary>
+        /// <param name="sourceBranch">Source branch to merge from</param>
+        /// <param name="targetBranch">Target branch to merge into</param>
+        /// <returns>JSON string containing conflict summary from Dolt</returns>
+        Task<string> PreviewMergeConflictsAsync(string sourceBranch, string targetBranch);
+        
+        /// <summary>
+        /// Get detailed conflict information from conflict tables
+        /// Queries the dolt_conflicts_{tableName} table for specific conflict details
+        /// </summary>
+        /// <param name="tableName">Name of the table to get conflict details for</param>
+        /// <returns>Collection of dictionaries containing conflict data</returns>
+        Task<IEnumerable<Dictionary<string, object>>> GetConflictDetailsAsync(string tableName);
+        
+        /// <summary>
+        /// Execute custom SQL for resolving specific conflicts
+        /// Allows fine-grained control over conflict resolution beyond simple ours/theirs
+        /// </summary>
+        /// <param name="sql">SQL statement for conflict resolution</param>
+        /// <returns>Number of rows affected by the resolution</returns>
+        Task<int> ExecuteConflictResolutionAsync(string sql);
     }
 }

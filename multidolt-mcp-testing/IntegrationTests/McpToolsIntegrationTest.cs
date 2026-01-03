@@ -190,6 +190,51 @@ namespace DMMSTesting.IntegrationTests
             await SetupUserEnvironment(_userA);
             await UserA_CreateCollectionAndDocuments(_userA, COLLECTION_NAME);
             await UserA_InitializeAndCommit(_userA, COLLECTION_NAME);
+            
+            // CRITICAL: Ensure UserA commits all changes before UserB collaborative operations
+            _logger.LogInformation("🔄 STEP 1.3: User A checking status and committing all changes before collaborative workflow...");
+            
+            // First, check if there are any uncommitted changes
+            var statusResult = await _userA.DoltStatusTool!.DoltStatus();
+            var statusJson = JsonSerializer.Serialize(statusResult);
+            var statusDoc = JsonDocument.Parse(statusJson);
+            var hasChanges = false;
+            
+            if (statusDoc.RootElement.TryGetProperty("has_changes", out var hasChangesElement))
+            {
+                hasChanges = hasChangesElement.GetBoolean();
+            }
+            
+            if (hasChanges)
+            {
+                _logger.LogInformation("⚠️ UserA has uncommitted changes - committing before collaborative workflow");
+                
+                // Commit all changes to make repository ready for collaboration
+                var commitResult = await _userA.DoltCommitTool!.DoltCommit("Initial collaborative workspace setup - commit all changes");
+                
+                // Validate commit result to ensure UserA repository is ready for collaboration
+                var commitJson = JsonSerializer.Serialize(commitResult);
+                var commitDoc = JsonDocument.Parse(commitJson);
+                var commitSuccess = false;
+                if (commitDoc.RootElement.TryGetProperty("success", out var successElement))
+                {
+                    commitSuccess = successElement.GetBoolean();
+                }
+                
+                if (commitSuccess)
+                {
+                    _logger.LogInformation("✅ UserA committed changes successfully - ready for UserB collaborative workflow");
+                }
+                else
+                {
+                    _logger.LogWarning("⚠️ UserA commit did not report success - may need investigation");
+                }
+            }
+            else
+            {
+                _logger.LogInformation("ℹ️ UserA repository already in committed state - ready for collaborative workflow");
+            }
+            
             _logger.LogInformation("✅ Phase 1 Complete: User A repository established with version control");
             
             // Step 2: User B clones and adds content using MCP tools  
@@ -307,15 +352,10 @@ namespace DMMSTesting.IntegrationTests
             CopyDirectory(sourceRepoPath, user.DoltRepoPath, true);
             _logger.LogInformation("✅ Repository data copied successfully to User B's environment");
             
-            // Create collection first
-            _logger.LogInformation("📋 Creating ChromaDB collection for User B using ChromaCreateCollectionTool");
-            var createResult = await user.ChromaCreateCollectionTool!.CreateCollection(collectionName);
-            ValidateSuccessfulResult(createResult, "CreateCollection for User B");
-            _logger.LogInformation("✅ Collection '{CollectionName}' created successfully for User B", collectionName);
-            
             // Since we're simulating a local workflow, we'll use DoltCheckout to switch to main
-            // and then sync the existing data from Dolt to ChromaDB
+            // This will sync the existing data from Dolt to ChromaDB and create the collection automatically
             _logger.LogInformation("🔄 Checking out main branch to sync Dolt data to ChromaDB using DoltCheckoutTool");
+            _logger.LogInformation("📋 Note: ChromaDB collection will be created automatically during checkout/sync process");
             var checkoutResult = await user.DoltCheckoutTool!.DoltCheckout("main");
             ValidateSuccessfulResult(checkoutResult, "DoltCheckout to main branch");
             _logger.LogInformation("✅ User B checked out main branch and synced data via MCP tool");
@@ -755,9 +795,13 @@ namespace DMMSTesting.IntegrationTests
             var doltLogger = LoggerFactory.Create(b => b.AddConsole()).CreateLogger<DoltCli>();
             DoltCli = new DoltCli(Options.Create(DoltConfig), doltLogger);
             
-            // Create deletion tracker
+            // Create deletion tracker and initialize its database schema
             var deletionTrackerLogger = LoggerFactory.Create(b => b.AddConsole()).CreateLogger<SqliteDeletionTracker>();
             DeletionTracker = new SqliteDeletionTracker(deletionTrackerLogger, chromaConfig.Value);
+            
+            // Initialize the deletion tracker database schema
+            // This is critical for the SqliteDeletionTracker to work properly
+            DeletionTracker.InitializeAsync(DoltRepoPath).GetAwaiter().GetResult();
             
             // Create V2 sync manager
             var syncLogger = LoggerFactory.Create(b => b.AddConsole()).CreateLogger<SyncManagerV2>();

@@ -940,9 +940,12 @@ namespace DMMSTesting.IntegrationTests
             var doltLogger = LoggerFactory.Create(b => b.AddConsole()).CreateLogger<DoltCli>();
             DoltCli = new DoltCli(Options.Create(doltConfig), doltLogger);
             
-            // Create deletion tracker
+            // Create deletion tracker and initialize its database schema
             var deletionTrackerLogger = LoggerFactory.Create(b => b.AddConsole()).CreateLogger<SqliteDeletionTracker>();
             var deletionTracker = new SqliteDeletionTracker(deletionTrackerLogger, chromaConfig.Value);
+            
+            // Initialize the deletion tracker database schema
+            deletionTracker.InitializeAsync(DoltRepoPath).GetAwaiter().GetResult();
             
             // Create V2 services with proper logging
             var loggerFactory = LoggerFactory.Create(b => b.AddConsole().SetMinimumLevel(LogLevel.Information));

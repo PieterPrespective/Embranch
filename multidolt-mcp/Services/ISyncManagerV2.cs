@@ -1,4 +1,5 @@
 using DMMS.Models;
+using System.ComponentModel;
 
 namespace DMMS.Services
 {
@@ -71,8 +72,9 @@ namespace DMMS.Services
         /// </summary>
         /// <param name="sourceBranch">Name of the branch to merge from</param>
         /// <param name="force">Force merge even if local changes exist</param>
+        /// <param name="resolutions">Optional conflict resolution preferences</param>
         /// <returns>Result including success status and conflict information</returns>
-        Task<MergeSyncResultV2> ProcessMergeAsync(string sourceBranch, bool force = false);
+        Task<Services.MergeSyncResultV2> ProcessMergeAsync(string sourceBranch, bool force = false, List<ConflictResolutionRequest>? resolutions = null);
         
         // ==================== Push Processing ====================
         
@@ -223,6 +225,8 @@ namespace DMMS.Services
     {
         public bool HasConflicts { get; set; }
         public List<ConflictInfoV2> Conflicts { get; set; } = new();
+        public string? MergeCommitHash { get; set; }
+        public int? CollectionsSynced { get; set; }
         
         public MergeSyncStatusV2 MergeStatus => 
             Status == SyncStatusV2.LocalChangesExist ? MergeSyncStatusV2.LocalChangesExist :

@@ -74,6 +74,10 @@ builder.Services.AddSingleton<IDeletionTracker, SqliteDeletionTracker>();
 // Register collection change detection service
 builder.Services.AddSingleton<ICollectionChangeDetector, CollectionChangeDetector>();
 
+// Register merge conflict analysis and resolution services
+builder.Services.AddSingleton<IConflictAnalyzer, ConflictAnalyzer>();
+builder.Services.AddSingleton<IMergeConflictResolver, MergeConflictResolver>();
+
 builder.Services
     .AddMcpServer()
     .WithStdioServerTransport()
@@ -115,7 +119,11 @@ builder.Services
     // Dolt Version Control Tools - Local Operations
     .WithTools<DoltCommitTool>()
     .WithTools<DoltCheckoutTool>()
-    .WithTools<DoltResetTool>();
+    .WithTools<DoltResetTool>()
+    
+    // Dolt Version Control Tools - Merge Operations
+    .WithTools<PreviewDoltMergeTool>()
+    .WithTools<ExecuteDoltMergeTool>();
 
 var host = builder.Build();
 

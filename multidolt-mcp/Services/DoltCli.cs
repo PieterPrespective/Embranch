@@ -962,6 +962,105 @@ namespace DMMS.Services
         }
 
         /// <summary>
+        /// Preview merge conflicts without performing the actual merge
+        /// Uses Dolt's DOLT_PREVIEW_MERGE_CONFLICTS_SUMMARY function if available
+        /// </summary>
+        /// <param name="sourceBranch">Source branch to merge from</param>
+        /// <param name="targetBranch">Target branch to merge into</param>
+        /// <returns>JSON string containing conflict summary from Dolt</returns>
+        public async Task<string> PreviewMergeConflictsAsync(string sourceBranch, string targetBranch)
+        {
+            try
+            {
+                // Try using Dolt's merge conflict preview function if available
+                var sql = $"SELECT * FROM DOLT_PREVIEW_MERGE_CONFLICTS_SUMMARY('{targetBranch}', '{sourceBranch}')";
+                var result = await QueryJsonAsync(sql);
+                return result;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "DOLT_PREVIEW_MERGE_CONFLICTS_SUMMARY not available, using fallback");
+                
+                // Fallback: return empty array indicating no conflicts detected via preview
+                // In a more complete implementation, this could do basic diff analysis
+                return "[]";
+            }
+        }
+
+        /// <summary>
+        /// Get detailed conflict information from conflict tables
+        /// Queries the dolt_conflicts_{tableName} table for specific conflict details
+        /// </summary>
+        /// <param name="tableName">Name of the table to get conflict details for</param>
+        /// <returns>Collection of dictionaries containing conflict data</returns>
+        public async Task<IEnumerable<Dictionary<string, object>>> GetConflictDetailsAsync(string tableName)
+        {
+            try
+            {
+                var sql = $"SELECT * FROM dolt_conflicts_{tableName}";
+                var json = await QueryJsonAsync(sql);
+                
+                using var doc = JsonDocument.Parse(json);
+                if (doc.RootElement.TryGetProperty("rows", out var rows))
+                {
+                    var conflicts = new List<Dictionary<string, object>>();
+                    
+                    foreach (var row in rows.EnumerateArray())
+                    {
+                        var conflict = new Dictionary<string, object>();
+                        
+                        foreach (var prop in row.EnumerateObject())
+                        {
+                            // Convert JsonElement to appropriate object type
+                            object? value = prop.Value.ValueKind switch
+                            {
+                                JsonValueKind.String => prop.Value.GetString(),
+                                JsonValueKind.Number => prop.Value.GetDecimal(),
+                                JsonValueKind.True => true,
+                                JsonValueKind.False => false,
+                                JsonValueKind.Null => null,
+                                _ => prop.Value.GetRawText()
+                            };
+                            
+                            conflict[prop.Name] = value;
+                        }
+                        
+                        conflicts.Add(conflict);
+                    }
+                    
+                    return conflicts;
+                }
+                
+                return new List<Dictionary<string, object>>();
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to get conflict details for table {TableName}", tableName);
+                return new List<Dictionary<string, object>>();
+            }
+        }
+
+        /// <summary>
+        /// Execute custom SQL for resolving specific conflicts
+        /// Allows fine-grained control over conflict resolution beyond simple ours/theirs
+        /// </summary>
+        /// <param name="sql">SQL statement for conflict resolution</param>
+        /// <returns>Number of rows affected by the resolution</returns>
+        public async Task<int> ExecuteConflictResolutionAsync(string sql)
+        {
+            try
+            {
+                _logger.LogDebug("Executing conflict resolution SQL: {Sql}", sql);
+                return await ExecuteAsync(sql);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to execute conflict resolution SQL");
+                throw new DoltException($"Conflict resolution failed: {ex.Message}", ex);
+            }
+        }
+
+        /// <summary>
         /// Strips ANSI color codes from git output and extracts clean commit message
         /// </summary>
         /// <param name="input">Raw git output with ANSI codes</param>

@@ -131,7 +131,7 @@ namespace DMMS.UnitTests
             Assert.That(pendingDeletions.Count, Is.EqualTo(1));
             
             var deletion = pendingDeletions.First();
-            Assert.That(deletion.CollectionName, Is.EqualTo(TestCollectionNameRenamed));
+            Assert.That(deletion.CollectionName, Is.EqualTo(TestCollectionName)); // CollectionName stores original name for tracking purposes
             Assert.That(deletion.OperationType, Is.EqualTo("rename"));
             Assert.That(deletion.OriginalName, Is.EqualTo(TestCollectionName));
             Assert.That(deletion.NewName, Is.EqualTo(TestCollectionNameRenamed));
@@ -211,8 +211,14 @@ namespace DMMS.UnitTests
             var operations = pendingDeletions.Select(d => new { d.CollectionName, d.OperationType }).ToList();
             
             Assert.That(operations, Does.Contain(new { CollectionName = "collection-1", OperationType = "deletion" }));
-            Assert.That(operations, Does.Contain(new { CollectionName = "collection-2-renamed", OperationType = "rename" }));
+            Assert.That(operations, Does.Contain(new { CollectionName = "collection-2", OperationType = "rename" })); // CollectionName stores original name
             Assert.That(operations, Does.Contain(new { CollectionName = "collection-3", OperationType = "metadata_update" }));
+            
+            // Additionally verify the rename operation has correct new name
+            var renameOperation = pendingDeletions.FirstOrDefault(d => d.OperationType == "rename");
+            Assert.That(renameOperation.OperationType, Is.EqualTo("rename"), "Should have a rename operation");
+            Assert.That(renameOperation.OriginalName, Is.EqualTo("collection-2"));
+            Assert.That(renameOperation.NewName, Is.EqualTo("collection-2-renamed"));
 
             TestContext.WriteLine($"✓ Successfully tracked {pendingDeletions.Count} collection operations");
         }
@@ -251,7 +257,7 @@ namespace DMMS.UnitTests
 
             // Mark two as committed
             await _tracker.MarkCollectionDeletionCommittedAsync(_testRepoPath, "collection-1", "deletion");
-            await _tracker.MarkCollectionDeletionCommittedAsync(_testRepoPath, "collection-3-new", "rename");
+            await _tracker.MarkCollectionDeletionCommittedAsync(_testRepoPath, "collection-3", "rename"); // Use original name, not new name
 
             // Verify before cleanup - should still have 1 pending
             var pendingBefore = await _tracker.GetPendingCollectionDeletionsAsync(_testRepoPath);

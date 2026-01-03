@@ -21,7 +21,7 @@ namespace DMMS.UnitTests
         private SqliteDeletionTracker _tracker;
 
         [SetUp]
-        public void Setup()
+        public async Task Setup()
         {
             _tempDataPath = Path.Combine(Path.GetTempPath(), $"deletion_test_{Guid.NewGuid():N}");
             _testRepoPath = Path.Combine(Path.GetTempPath(), $"repo_test_{Guid.NewGuid():N}");
@@ -35,6 +35,9 @@ namespace DMMS.UnitTests
             var serverConfig = new ServerConfiguration { DataPath = _tempDataPath };
             
             _tracker = new SqliteDeletionTracker(logger, serverConfig);
+            
+            // Initialize the deletion tracker database schema - CRITICAL for proper SqliteDeletionTracker operation
+            await _tracker.InitializeAsync(_testRepoPath);
         }
 
         [Test]

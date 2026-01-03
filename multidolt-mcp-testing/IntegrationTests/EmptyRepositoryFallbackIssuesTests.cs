@@ -31,7 +31,7 @@ namespace DMMSTesting.IntegrationTests
         private string _testWorkingDir = "";
 
         [SetUp]
-        public void Setup()
+        public async Task Setup()
         {
             // Create truly unique test directory with timestamp and GUID
             var timestamp = DateTime.UtcNow.ToString("yyyyMMddHHmmss");
@@ -97,6 +97,13 @@ namespace DMMSTesting.IntegrationTests
             _statusTool = _serviceProvider.GetRequiredService<DoltStatusTool>();
             _commitTool = _serviceProvider.GetRequiredService<DoltCommitTool>();
             _pushTool = _serviceProvider.GetRequiredService<DoltPushTool>();
+            
+            // Initialize SqliteDeletionTracker database schema
+            var deletionTracker = _serviceProvider.GetRequiredService<IDeletionTracker>() as SqliteDeletionTracker;
+            if (deletionTracker != null)
+            {
+                await deletionTracker.InitializeAsync(Path.Combine(_testWorkingDir, "dolt-repo"));
+            }
             
             // Create standalone logger to avoid disposal race condition
             _logger = LoggerFactory.Create(b => b.AddConsole()).CreateLogger<EmptyRepositoryFallbackIssuesTests>();

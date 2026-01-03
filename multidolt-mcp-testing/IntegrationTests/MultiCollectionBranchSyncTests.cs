@@ -65,10 +65,11 @@ namespace DMMS.Testing.IntegrationTests
                 serverConfig
             );
 
-            // Initialize deletion tracker
+            // Initialize deletion tracker and its database schema
             var deletionTracker = new SqliteDeletionTracker(
                 loggerFactory.CreateLogger<SqliteDeletionTracker>(),
                 serverConfig.Value);
+            deletionTracker.InitializeAsync(_tempDir).GetAwaiter().GetResult();
                 
             // Initialize services
             var chromaDetector = new ChromaToDoltDetector(_chromaService, _doltCli, deletionTracker, doltConfig, loggerFactory.CreateLogger<ChromaToDoltDetector>());

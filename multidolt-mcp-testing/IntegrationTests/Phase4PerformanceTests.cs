@@ -66,10 +66,11 @@ namespace DMMS.Testing.IntegrationTests
                 config
             );
 
-            // Initialize deletion tracker
+            // Initialize deletion tracker and its database schema
             var deletionTracker = new SqliteDeletionTracker(
                 loggerFactory.CreateLogger<SqliteDeletionTracker>(),
                 config.Value);
+            deletionTracker.InitializeAsync(_tempDir).GetAwaiter().GetResult();
                 
             // Initialize sync manager 
             _syncManager = new SyncManagerV2(
