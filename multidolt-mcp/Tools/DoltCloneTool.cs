@@ -17,17 +17,19 @@ public class DoltCloneTool
     private readonly ILogger<DoltCloneTool> _logger;
     private readonly IDoltCli _doltCli;
     private readonly ISyncManagerV2 _syncManager;
+    private readonly ISyncStateTracker _syncStateTracker;
     private readonly string _repositoryPath;
     private readonly DoltConfiguration _doltConfig;
 
     /// <summary>
     /// Initializes a new instance of the DoltCloneTool class
     /// </summary>
-    public DoltCloneTool(ILogger<DoltCloneTool> logger, IDoltCli doltCli, ISyncManagerV2 syncManager, IOptions<DoltConfiguration> config)
+    public DoltCloneTool(ILogger<DoltCloneTool> logger, IDoltCli doltCli, ISyncManagerV2 syncManager, ISyncStateTracker syncStateTracker, IOptions<DoltConfiguration> config)
     {
         _logger = logger;
         _doltCli = doltCli;
         _syncManager = syncManager;
+        _syncStateTracker = syncStateTracker;
         _repositoryPath = config.Value.RepositoryPath;
         _doltConfig = config.Value;
     }
@@ -327,8 +329,8 @@ public class DoltCloneTool
                                 // Create the required database schema for sync operations
                                 await CreateSyncDatabaseSchemaAsync();
                                 
-                                // Initialize sync state
-                                await InitializeSyncStateAsync();
+                                // PP13-69 Phase 3: Initialize sync state in SQLite (not Dolt)
+                                await InitializeSyncStateInSqliteAsync();
                             }
                             catch (Exception commitEx)
                             {
@@ -531,6 +533,9 @@ public class DoltCloneTool
                 _logger.LogWarning($"[DoltCloneTool.DoltClone] ⚠️ Database readiness timeout - proceeding with sync anyway");
             }
 
+            // PP13-69 Phase 3: Initialize SQLite sync state tracking for successful clone
+            await InitializeSyncStateInSqliteAsync();
+            
             // Sync to ChromaDB
             int documentsLoaded = 0;
             List<string> collectionsCreated = new();
@@ -860,24 +865,24 @@ CREATE TABLE IF NOT EXISTS sync_operations (
     }
 
     /// <summary>
-    /// Initializes the sync state after schema creation for proper SyncManagerV2 integration
+    /// PP13-69 Phase 3: Initializes sync state in SQLite (not Dolt) for proper SyncManagerV2 integration
     /// </summary>
-    private async Task InitializeSyncStateAsync()
+    private async Task InitializeSyncStateInSqliteAsync()
     {
         try
         {
-            _logger.LogInformation("[DoltCloneTool.InitializeSyncStateAsync] Initializing sync state for newly created repository");
+            _logger.LogInformation("[DoltCloneTool.InitializeSyncStateInSqliteAsync] PP13-69 Phase 3: Initializing sync state in SQLite for repository");
 
             // Get the current commit hash for tracking
             string? currentCommit = null;
             try
             {
                 currentCommit = await _doltCli.GetHeadCommitHashAsync();
-                _logger.LogInformation($"[DoltCloneTool.InitializeSyncStateAsync] Current commit hash: {currentCommit}");
+                _logger.LogInformation($"[DoltCloneTool.InitializeSyncStateInSqliteAsync] Current commit hash: {currentCommit}");
             }
             catch (Exception ex)
             {
-                _logger.LogWarning(ex, "[DoltCloneTool.InitializeSyncStateAsync] Could not get current commit hash, proceeding without it");
+                _logger.LogWarning(ex, "[DoltCloneTool.InitializeSyncStateInSqliteAsync] Could not get current commit hash, proceeding without it");
             }
 
             // Create a default collection entry if none exists (ensures SyncManager can track operations)
@@ -928,7 +933,29 @@ INSERT IGNORE INTO chroma_sync_state (
     JSON_OBJECT('initialized_by', 'fallback_initialization', 'repository_type', 'empty_clone')
 )";
             await _doltCli.ExecuteAsync(initializeSyncStateSql);
-            _logger.LogInformation("[DoltCloneTool.InitializeSyncStateAsync] ✓ Initialized sync state for default collection");
+            // PP13-69 Phase 3: Use SQLite sync state tracker instead of Dolt tables
+            var repoPath = _repositoryPath;
+            var defaultCollection = "default";
+            var currentBranch = "main";
+            
+            try
+            {
+                // Initialize SQLite sync state tracker
+                await _syncStateTracker.InitializeAsync(repoPath);
+                _logger.LogInformation($"[DoltCloneTool.InitializeSyncStateInSqliteAsync] ✓ Initialized SQLite sync state tracker");
+                
+                // Create sync state record for default collection
+                var syncStateRecord = new SyncStateRecord(repoPath, defaultCollection, currentBranch)
+                    .WithSyncUpdate(currentCommit, 0, 0, "default");
+                    
+                await _syncStateTracker.UpdateSyncStateAsync(repoPath, defaultCollection, syncStateRecord);
+                _logger.LogInformation($"[DoltCloneTool.InitializeSyncStateInSqliteAsync] ✓ Created sync state record in SQLite for collection '{defaultCollection}'");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, $"[DoltCloneTool.InitializeSyncStateInSqliteAsync] Failed to initialize SQLite sync state: {ex.Message}");
+                // Continue without failing the entire operation
+            }
 
             // Record the initialization operation in sync_operations
             var recordOperationSql = $@"

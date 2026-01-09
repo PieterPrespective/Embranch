@@ -73,22 +73,25 @@ namespace DMMS.Testing.IntegrationTests
                 loggerFactory.CreateLogger<ChromaDbService>(), 
                 serverConfig);
 
-            // Initialize DeltaDetector
-            _deltaDetector = new DeltaDetectorV2(
-                _doltCli, 
-                loggerFactory.CreateLogger<DeltaDetectorV2>());
-
             // Initialize deletion tracker and its database schema
             var deletionTracker = new SqliteDeletionTracker(
                 loggerFactory.CreateLogger<SqliteDeletionTracker>(),
                 serverConfig.Value);
             deletionTracker.InitializeAsync(_testDir).GetAwaiter().GetResult();
+
+            // Initialize DeltaDetector
+            _deltaDetector = new DeltaDetectorV2(
+                _doltCli,
+                deletionTracker, // ISyncStateTracker
+                _testDir,        // repoPath
+                loggerFactory.CreateLogger<DeltaDetectorV2>());
                 
             // Initialize SyncManager
             _syncManager = new SyncManagerV2(
                 _doltCli,
                 _chromaService,
-                deletionTracker,
+                deletionTracker,        // IDeletionTracker
+                deletionTracker,        // ISyncStateTracker (same object implements both interfaces)
                 doltConfig,
                 loggerFactory.CreateLogger<SyncManagerV2>());
 

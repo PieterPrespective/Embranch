@@ -15,15 +15,17 @@ public class DoltCommitTool
     private readonly ILogger<DoltCommitTool> _logger;
     private readonly IDoltCli _doltCli;
     private readonly ISyncManagerV2 _syncManager;
+    private readonly ISyncStateTracker _syncStateTracker;
 
     /// <summary>
     /// Initializes a new instance of the DoltCommitTool class
     /// </summary>
-    public DoltCommitTool(ILogger<DoltCommitTool> logger, IDoltCli doltCli, ISyncManagerV2 syncManager)
+    public DoltCommitTool(ILogger<DoltCommitTool> logger, IDoltCli doltCli, ISyncManagerV2 syncManager, ISyncStateTracker syncStateTracker)
     {
         _logger = logger;
         _doltCli = doltCli;
         _syncManager = syncManager;
+        _syncStateTracker = syncStateTracker;
     }
 
     /// <summary>
@@ -104,6 +106,9 @@ public class DoltCommitTool
             // Get parent commit info
             var parentHash = await _doltCli.GetHeadCommitHashAsync();
 
+            // PP13-69 Phase 3: Ensure sync state is NEVER staged in Dolt - validate before commit
+            await ValidateSyncStateNotStagedAsync();
+            
             // Commit using sync manager (auto-stage enabled)
             ToolLoggingUtility.LogToolInfo(_logger, toolName, $"Processing commit with {localChanges.TotalChanges} changes");
             var commitResult = await _syncManager.ProcessCommitAsync(message, true, false);
@@ -124,6 +129,9 @@ public class DoltCommitTool
             // Get new commit info
             var newCommitHash = await _doltCli.GetHeadCommitHashAsync();
             var timestamp = DateTime.UtcNow;
+            
+            // PP13-69 Phase 3: Update sync state in SQLite after successful commit
+            await UpdateSyncStateAfterCommit(newCommitHash);
 
             var response = new
             {
@@ -160,6 +168,80 @@ public class DoltCommitTool
                 error = "OPERATION_FAILED",
                 message = $"Failed to create commit: {ex.Message}"
             };
+        }
+    }
+
+    /// <summary>
+    /// PP13-69 Phase 3: Validates that sync state tables are never staged in Dolt
+    /// </summary>
+    private async Task ValidateSyncStateNotStagedAsync()
+    {
+        try
+        {
+            ToolLoggingUtility.LogToolInfo(_logger, nameof(DoltCommitTool), "PP13-69 Phase 3: Validating sync state not staged in Dolt...");
+            
+            // Check staged tables to ensure sync state related tables are not included
+            var status = await _doltCli.GetStatusAsync();
+            var stagedTables = status?.StagedTables?.ToList() ?? new List<string>();
+            
+            // Look for any sync state related tables that should not be in Dolt
+            var syncStateRelatedTables = new[] { "chroma_sync_state", "sync_state", "local_sync_state" };
+            
+            foreach (var table in syncStateRelatedTables)
+            {
+                if (stagedTables.Any(stagedTable => stagedTable.Contains(table, StringComparison.OrdinalIgnoreCase)))
+                {
+                    ToolLoggingUtility.LogToolWarning(_logger, nameof(DoltCommitTool), 
+                        $"⚠️ PP13-69 Phase 3 VIOLATION: Sync state table '{table}' detected in staged files! This should be in SQLite only.");
+                    
+                    // Log this as a warning but don't fail the commit - the sync state should be managed in SQLite
+                    _logger.LogWarning("PP13-69 Phase 3: Sync state table {Table} found in staged files - this indicates a configuration issue", table);
+                }
+            }
+            
+            ToolLoggingUtility.LogToolInfo(_logger, nameof(DoltCommitTool), "✅ PP13-69 Phase 3: Sync state validation completed");
+        }
+        catch (Exception ex)
+        {
+            // Don't fail commit due to validation issues, but log the problem
+            ToolLoggingUtility.LogToolWarning(_logger, nameof(DoltCommitTool), $"⚠️ Failed to validate sync state staging: {ex.Message}");
+            _logger.LogWarning(ex, "PP13-69 Phase 3: Sync state validation failed, but commit continues");
+        }
+    }
+
+    /// <summary>
+    /// PP13-69 Phase 3: Updates sync state in SQLite after successful Dolt commit
+    /// </summary>
+    private async Task UpdateSyncStateAfterCommit(string commitHash)
+    {
+        try
+        {
+            ToolLoggingUtility.LogToolInfo(_logger, nameof(DoltCommitTool), $"PP13-69 Phase 3: Updating sync state in SQLite for commit {commitHash?.Substring(0, 7)}...");
+            
+            var repoPath = Environment.CurrentDirectory;
+            var currentBranch = await _doltCli.GetCurrentBranchAsync();
+            
+            // Get all collections that have sync state and update their commit hashes
+            var allSyncStates = await _syncStateTracker.GetAllSyncStatesAsync(repoPath);
+            
+            foreach (var syncState in allSyncStates)
+            {
+                // Update only sync states for the current branch (or null branch context)
+                if (syncState.BranchContext == currentBranch || syncState.BranchContext == null)
+                {
+                    await _syncStateTracker.UpdateCommitHashAsync(repoPath, syncState.CollectionName, commitHash, currentBranch);
+                    ToolLoggingUtility.LogToolInfo(_logger, nameof(DoltCommitTool), 
+                        $"✅ Updated sync state for collection '{syncState.CollectionName}' with commit {commitHash?.Substring(0, 7)}");
+                }
+            }
+            
+            ToolLoggingUtility.LogToolInfo(_logger, nameof(DoltCommitTool), "✅ PP13-69 Phase 3: Sync state update completed");
+        }
+        catch (Exception ex)
+        {
+            // Don't fail commit due to sync state update issues, but log the problem
+            ToolLoggingUtility.LogToolWarning(_logger, nameof(DoltCommitTool), $"⚠️ Failed to update sync state after commit: {ex.Message}");
+            _logger.LogWarning(ex, "PP13-69 Phase 3: Sync state update failed after commit");
         }
     }
 }

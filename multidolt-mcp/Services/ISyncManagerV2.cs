@@ -62,8 +62,12 @@ namespace DMMS.Services
         /// <param name="targetBranch">Name of the branch to checkout</param>
         /// <param name="createNew">Whether to create the branch if it doesn't exist</param>
         /// <param name="force">Force checkout even if local changes exist (will overwrite)</param>
+        /// <param name="preserveLocalChanges">If true, preserve local changes during checkout conflicts (carry mode)</param>
         /// <returns>Result indicating success or blocked by local changes</returns>
-        Task<SyncResultV2> ProcessCheckoutAsync(string targetBranch, bool createNew = false, bool force = false);
+        /// <summary>
+        /// PP13-69-C1: Simplified checkout operation. Force parameter removed - sync state conflicts eliminated.
+        /// </summary>
+        Task<SyncResultV2> ProcessCheckoutAsync(string targetBranch, bool createNew = false, bool preserveLocalChanges = false);
         
         // ==================== Merge Processing (Updated) ====================
         
@@ -95,6 +99,14 @@ namespace DMMS.Services
         /// <param name="hard">Whether to perform hard reset (discards local changes)</param>
         /// <returns>Result indicating success and sync regeneration</returns>
         Task<SyncResultV2> ProcessResetAsync(string targetCommit, bool hard = false);
+        
+        /// <summary>
+        /// Perform comprehensive state reset including Dolt, ChromaDB, and SQLite sync state.
+        /// PP13-69-C6: Enhanced reset functionality for test state isolation.
+        /// </summary>
+        /// <param name="targetBranch">Target branch for sync state reset</param>
+        /// <returns>Result indicating success of comprehensive reset</returns>
+        Task<SyncResultV2> PerformComprehensiveResetAsync(string targetBranch);
         
         // ==================== Change Detection ====================
         

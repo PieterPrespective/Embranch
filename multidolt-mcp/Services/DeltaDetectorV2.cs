@@ -14,14 +14,18 @@ namespace DMMS.Services
     public class DeltaDetectorV2
     {
         private readonly IDoltCli _dolt;
+        private readonly ISyncStateTracker _syncStateTracker;
+        private readonly string _repoPath;
         private readonly ILogger<DeltaDetectorV2>? _logger;
 
         /// <summary>
-        /// Initialize the DeltaDetectorV2 with a Dolt CLI interface
+        /// Initialize the DeltaDetectorV2 with a Dolt CLI interface and sync state tracker
         /// </summary>
-        public DeltaDetectorV2(IDoltCli dolt, ILogger<DeltaDetectorV2>? logger = null)
+        public DeltaDetectorV2(IDoltCli dolt, ISyncStateTracker syncStateTracker, string repoPath, ILogger<DeltaDetectorV2>? logger = null)
         {
             _dolt = dolt;
+            _syncStateTracker = syncStateTracker;
+            _repoPath = repoPath;
             _logger = logger;
         }
 
@@ -579,30 +583,60 @@ namespace DMMS.Services
         }
 
         /// <summary>
-        /// Update sync state for a collection
+        /// Update sync state for a collection using SQLite storage
         /// </summary>
         public async Task UpdateSyncStateAsync(string collectionName, string commitHash, int documentCount, int chunkCount)
         {
-            // Ensure collection exists in collections table before updating sync state
-            await EnsureCollectionExistsAsync(collectionName);
-
-            var sql = $@"
-                INSERT INTO chroma_sync_state 
-                    (collection_name, last_sync_commit, last_sync_at, document_count, chunk_count, sync_status)
-                VALUES 
-                    ('{collectionName}', '{commitHash}', NOW(), {documentCount}, {chunkCount}, 'synced')
-                ON DUPLICATE KEY UPDATE
-                    last_sync_commit = VALUES(last_sync_commit),
-                    last_sync_at = VALUES(last_sync_at),
-                    document_count = VALUES(document_count),
-                    chunk_count = VALUES(chunk_count),
-                    sync_status = VALUES(sync_status),
-                    error_message = NULL";
-
             try
             {
-                await _dolt.ExecuteAsync(sql);
-                _logger?.LogDebug("Updated sync state for collection {Collection}", collectionName);
+                // Get current branch for context
+                var currentBranch = await _dolt.GetCurrentBranchAsync();
+                _logger?.LogDebug("UpdateSyncStateAsync: Branch={Branch}, Collection={Collection}, Repo={Repo}", currentBranch, collectionName, _repoPath);
+                
+                // Get existing sync state or create new one
+                var existingState = await _syncStateTracker.GetSyncStateAsync(_repoPath, collectionName, currentBranch);
+                _logger?.LogDebug("UpdateSyncStateAsync: ExistingState={ExistingState}", existingState != null ? "Found" : "NotFound");
+                
+                SyncStateRecord syncState;
+                if (existingState is { } state)
+                {
+                    // Update existing state
+                    syncState = state.WithSyncUpdate(commitHash, documentCount, chunkCount);
+                }
+                else
+                {
+                    // Create new sync state with unique ID
+                    var uniqueId = $"{collectionName}_{currentBranch}_{Guid.NewGuid():N}";
+                    syncState = new SyncStateRecord(
+                        id: uniqueId,
+                        repoPath: _repoPath,
+                        collectionName: collectionName,
+                        branchContext: currentBranch,
+                        lastSyncCommit: commitHash,
+                        lastSyncAt: DateTime.UtcNow,
+                        documentCount: documentCount,
+                        chunkCount: chunkCount,
+                        embeddingModel: null,
+                        syncStatus: "synced",
+                        localChangesCount: 0,
+                        errorMessage: null,
+                        metadata: null,
+                        createdAt: DateTime.UtcNow,
+                        updatedAt: DateTime.UtcNow
+                    );
+                }
+                
+                await _syncStateTracker.UpdateSyncStateAsync(_repoPath, collectionName, syncState);
+                _logger?.LogDebug("Updated sync state for collection {Collection} in SQLite storage", collectionName);
+                
+                // Verify storage by immediately retrieving
+                var verifyState = await _syncStateTracker.GetSyncStateAsync(_repoPath, collectionName, currentBranch);
+                _logger?.LogDebug("UpdateSyncStateAsync: VerifyState={VerifyState}", verifyState != null ? "Found" : "NotFound");
+                
+                if (verifyState == null)
+                {
+                    _logger?.LogError("CRITICAL: Sync state was not found immediately after storage for collection {Collection}", collectionName);
+                }
             }
             catch (Exception ex)
             {

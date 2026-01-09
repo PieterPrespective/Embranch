@@ -95,11 +95,11 @@ namespace DMMSTesting.IntegrationTests
             
             // Setup sync manager
             var syncLogger = loggerFactory.CreateLogger<SyncManagerV2>();
-            _syncManager = new SyncManagerV2(_targetDoltCli, _chromaService, deletionTracker, targetConfig, syncLogger);
+            _syncManager = new SyncManagerV2(_targetDoltCli, _chromaService, deletionTracker, deletionTracker, targetConfig, syncLogger);
 
             // Create clone tool
             var cloneLogger = loggerFactory.CreateLogger<DoltCloneTool>();
-            _cloneTool = new DoltCloneTool(cloneLogger, _targetDoltCli, _syncManager, targetConfig);
+            _cloneTool = new DoltCloneTool(cloneLogger, _targetDoltCli, _syncManager, deletionTracker, targetConfig);
         }
 
         [TearDown]
@@ -225,10 +225,15 @@ namespace DMMSTesting.IntegrationTests
             var loggerFactory = LoggerFactory.Create(builder => builder.AddConsole().SetMinimumLevel(LogLevel.Debug));
             var invalidDoltCli = new DoltCli(invalidConfig, loggerFactory.CreateLogger<DoltCli>());
             
+            // Create deletion tracker for the invalid tool
+            var serverConfig = new ServerConfiguration { DataPath = Path.Combine(_testDirectory, "data") };
+            var deletionTracker = new SqliteDeletionTracker(loggerFactory.CreateLogger<SqliteDeletionTracker>(), serverConfig);
+            
             var invalidCloneTool = new DoltCloneTool(
                 loggerFactory.CreateLogger<DoltCloneTool>(), 
                 invalidDoltCli, 
                 _syncManager,
+                deletionTracker,
                 invalidConfig);
 
             // Act: Attempt to clone with missing executable

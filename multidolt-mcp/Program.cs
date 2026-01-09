@@ -57,19 +57,36 @@ builder.Services.AddSingleton(Options.Create(serverConfig));
 builder.Services.AddSingleton(doltConfig);
 builder.Services.AddSingleton(Options.Create(doltConfig));
 
-// Register both implementations
-builder.Services.AddSingleton<ChromaDbService>();
+// Register ChromaDbService for server mode (without IDocumentIdResolver to avoid circular dependency)
+// IMPORTANT: Do NOT resolve IDocumentIdResolver here - it creates a circular dependency deadlock:
+// IChromaDbService → IDocumentIdResolver → IChromaDbService
+// The ChromaPythonService has a fallback CreateTemporaryResolver() for when idResolver is null.
+builder.Services.AddSingleton<ChromaDbService>(serviceProvider =>
+{
+    var config = serviceProvider.GetRequiredService<IOptions<ServerConfiguration>>();
+    var logger = serviceProvider.GetRequiredService<ILogger<ChromaDbService>>();
+    // NOTE: idResolver is intentionally null to avoid circular dependency deadlock
+    return new ChromaDbService(logger, config, idResolver: null);
+});
 
-// Register the appropriate service based on configuration
+// Register the appropriate IChromaDbService based on configuration
+// This must be registered BEFORE IDocumentIdResolver since DocumentIdResolver depends on it
 builder.Services.AddSingleton<IChromaDbService>(serviceProvider =>
     ChromaDbServiceFactory.CreateService(serviceProvider));
+
+// Register DocumentIdResolver for chunk-aware operations
+// This depends on IChromaDbService, so it must be registered after
+builder.Services.AddSingleton<IDocumentIdResolver, DocumentIdResolver>();
 
 // Register Dolt services
 builder.Services.AddSingleton<IDoltCli, DoltCli>();
 builder.Services.AddSingleton<ISyncManagerV2, SyncManagerV2>();
 
 // Register deletion tracking service
-builder.Services.AddSingleton<IDeletionTracker, SqliteDeletionTracker>();
+builder.Services.AddSingleton<SqliteDeletionTracker>();
+builder.Services.AddSingleton<IDeletionTracker>(provider => provider.GetRequiredService<SqliteDeletionTracker>());
+// PP13-69 Phase 3: Register sync state tracker (same instance as deletion tracker)
+builder.Services.AddSingleton<ISyncStateTracker>(provider => provider.GetRequiredService<SqliteDeletionTracker>());
 
 // Register collection change detection service
 builder.Services.AddSingleton<ICollectionChangeDetector, CollectionChangeDetector>();

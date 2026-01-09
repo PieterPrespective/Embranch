@@ -82,6 +82,7 @@ namespace DMMS.Testing.IntegrationTests
                 _doltCli,
                 _chromaService,
                 _deletionTracker,
+                _deletionTracker,
                 Microsoft.Extensions.Options.Options.Create(doltConfig),
                 syncLogger);
 

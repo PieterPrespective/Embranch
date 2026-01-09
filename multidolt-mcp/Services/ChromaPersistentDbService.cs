@@ -13,8 +13,8 @@ public class ChromaPersistentDbService : ChromaPythonService
     /// <summary>
     /// Initializes a new instance of ChromaPersistentDbService
     /// </summary>
-    public ChromaPersistentDbService(ILogger<ChromaPersistentDbService> logger, IOptions<ServerConfiguration> configuration)
-        : base(logger, configuration)
+    public ChromaPersistentDbService(ILogger<ChromaPersistentDbService> logger, IOptions<ServerConfiguration> configuration, IDocumentIdResolver? idResolver = null)
+        : base(logger, configuration, idResolver)
     {
         // Ensure ChromaDataPath is set for persistent storage
         if (string.IsNullOrEmpty(configuration.Value.ChromaDataPath))

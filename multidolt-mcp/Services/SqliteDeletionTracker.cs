@@ -12,9 +12,9 @@ using DMMS.Models;
 namespace DMMS.Services
 {
     /// <summary>
-    /// SQLite-based implementation of deletion tracking service
+    /// SQLite-based implementation of deletion tracking and sync state tracking services
     /// </summary>
-    public class SqliteDeletionTracker : IDeletionTracker, IDisposable
+    public class SqliteDeletionTracker : IDeletionTracker, ISyncStateTracker, IDisposable
     {
         private readonly ILogger<SqliteDeletionTracker> _logger;
         private readonly string _dbPath;
@@ -699,11 +699,34 @@ namespace DMMS.Services
                     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
                 );
 
+                CREATE TABLE IF NOT EXISTS sync_state (
+                    id TEXT PRIMARY KEY,
+                    repo_path TEXT NOT NULL,
+                    collection_name TEXT NOT NULL,
+                    branch_context TEXT,
+                    last_sync_commit TEXT,
+                    last_sync_at DATETIME,
+                    document_count INTEGER DEFAULT 0,
+                    chunk_count INTEGER DEFAULT 0,
+                    embedding_model TEXT,
+                    sync_status TEXT DEFAULT 'pending',
+                    local_changes_count INTEGER DEFAULT 0,
+                    error_message TEXT,
+                    metadata TEXT,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    
+                    UNIQUE(repo_path, collection_name, branch_context)
+                );
+
                 CREATE INDEX IF NOT EXISTS idx_repo_doc_collection ON local_deletions(repo_path, doc_id, collection_name);
                 CREATE INDEX IF NOT EXISTS idx_repo_sync_status ON local_deletions(repo_path, sync_status);
                 CREATE INDEX IF NOT EXISTS idx_repo_collection ON local_deletions(repo_path, collection_name);
                 CREATE INDEX IF NOT EXISTS idx_repo_collection_operation ON local_collection_deletions(repo_path, collection_name, operation_type);
-                CREATE INDEX IF NOT EXISTS idx_repo_collection_sync_status ON local_collection_deletions(repo_path, sync_status);";
+                CREATE INDEX IF NOT EXISTS idx_repo_collection_sync_status ON local_collection_deletions(repo_path, sync_status);
+                CREATE INDEX IF NOT EXISTS idx_sync_state_repo ON sync_state(repo_path);
+                CREATE INDEX IF NOT EXISTS idx_sync_state_collection ON sync_state(repo_path, collection_name);
+                CREATE INDEX IF NOT EXISTS idx_sync_state_branch ON sync_state(repo_path, branch_context);";
 
             using var command = new SqliteCommand(createTableSql, connection);
             await command.ExecuteNonQueryAsync();
@@ -818,6 +841,324 @@ namespace DMMS.Services
             
             return records;
         }
+
+        #endregion
+
+        #region ISyncStateTracker
+
+        /// <summary>
+        /// Gets the sync state for a specific collection
+        /// </summary>
+        public async Task<SyncStateRecord?> GetSyncStateAsync(string repoPath, string collectionName, string? branchContext = null)
+        {
+            await _semaphore.WaitAsync();
+            try
+            {
+                using var connection = new SqliteConnection($"Data Source={_dbPath}");
+                await connection.OpenAsync();
+
+                const string sql = @"
+                    SELECT id, repo_path, collection_name, branch_context, last_sync_commit, 
+                           last_sync_at, document_count, chunk_count, embedding_model, 
+                           sync_status, local_changes_count, error_message, metadata, 
+                           created_at, updated_at
+                    FROM sync_state 
+                    WHERE repo_path = @repoPath AND collection_name = @collectionName 
+                    AND (branch_context = @branchContext OR (@branchContext IS NULL AND branch_context IS NULL))";
+
+                using var command = new SqliteCommand(sql, connection);
+                command.Parameters.AddWithValue("@repoPath", repoPath);
+                command.Parameters.AddWithValue("@collectionName", collectionName);
+                command.Parameters.AddWithValue("@branchContext", (object?)branchContext ?? DBNull.Value);
+
+                _logger?.LogDebug("GetSyncStateAsync: Querying for {RepoPath}/{Collection}/{Branch}", repoPath, collectionName, branchContext);
+                using var reader = await command.ExecuteReaderAsync();
+                if (await reader.ReadAsync())
+                {
+                    return new SyncStateRecord(
+                        reader.GetString("id"),
+                        reader.GetString("repo_path"),
+                        reader.GetString("collection_name"),
+                        reader.IsDBNull("branch_context") ? null : reader.GetString("branch_context"),
+                        reader.IsDBNull("last_sync_commit") ? null : reader.GetString("last_sync_commit"),
+                        reader.IsDBNull("last_sync_at") ? null : reader.GetDateTime("last_sync_at"),
+                        reader.GetInt32("document_count"),
+                        reader.GetInt32("chunk_count"),
+                        reader.IsDBNull("embedding_model") ? null : reader.GetString("embedding_model"),
+                        reader.GetString("sync_status"),
+                        reader.GetInt32("local_changes_count"),
+                        reader.IsDBNull("error_message") ? null : reader.GetString("error_message"),
+                        reader.IsDBNull("metadata") ? null : reader.GetString("metadata"),
+                        reader.GetDateTime("created_at"),
+                        reader.GetDateTime("updated_at")
+                    );
+                }
+
+                _logger?.LogDebug("GetSyncStateAsync: No record found for {RepoPath}/{Collection}/{Branch}", repoPath, collectionName, branchContext);
+                return null;
+            }
+            finally
+            {
+                _semaphore.Release();
+            }
+        }
+
+        /// <summary>
+        /// Updates or creates a sync state record for a collection
+        /// </summary>
+        public async Task UpdateSyncStateAsync(string repoPath, string collectionName, SyncStateRecord state)
+        {
+            await _semaphore.WaitAsync();
+            try
+            {
+                using var connection = new SqliteConnection($"Data Source={_dbPath}");
+                await connection.OpenAsync();
+
+                const string sql = @"
+                    INSERT OR REPLACE INTO sync_state 
+                    (id, repo_path, collection_name, branch_context, last_sync_commit, 
+                     last_sync_at, document_count, chunk_count, embedding_model, 
+                     sync_status, local_changes_count, error_message, metadata, 
+                     created_at, updated_at)
+                    VALUES 
+                    (@id, @repoPath, @collectionName, @branchContext, @lastSyncCommit,
+                     @lastSyncAt, @documentCount, @chunkCount, @embeddingModel,
+                     @syncStatus, @localChangesCount, @errorMessage, @metadata,
+                     @createdAt, @updatedAt)";
+
+                using var command = new SqliteCommand(sql, connection);
+                command.Parameters.AddWithValue("@id", state.Id);
+                command.Parameters.AddWithValue("@repoPath", state.RepoPath);
+                command.Parameters.AddWithValue("@collectionName", state.CollectionName);
+                command.Parameters.AddWithValue("@branchContext", (object?)state.BranchContext ?? DBNull.Value);
+                command.Parameters.AddWithValue("@lastSyncCommit", (object?)state.LastSyncCommit ?? DBNull.Value);
+                command.Parameters.AddWithValue("@lastSyncAt", (object?)state.LastSyncAt ?? DBNull.Value);
+                command.Parameters.AddWithValue("@documentCount", state.DocumentCount);
+                command.Parameters.AddWithValue("@chunkCount", state.ChunkCount);
+                command.Parameters.AddWithValue("@embeddingModel", (object?)state.EmbeddingModel ?? DBNull.Value);
+                command.Parameters.AddWithValue("@syncStatus", state.SyncStatus);
+                command.Parameters.AddWithValue("@localChangesCount", state.LocalChangesCount);
+                command.Parameters.AddWithValue("@errorMessage", (object?)state.ErrorMessage ?? DBNull.Value);
+                command.Parameters.AddWithValue("@metadata", (object?)state.Metadata ?? DBNull.Value);
+                command.Parameters.AddWithValue("@createdAt", state.CreatedAt);
+                command.Parameters.AddWithValue("@updatedAt", DateTime.UtcNow);
+
+                var rowsAffected = await command.ExecuteNonQueryAsync();
+                _logger?.LogDebug("UpdateSyncStateAsync: Stored sync state for {RepoPath}/{Collection}/{Branch}, RowsAffected={RowsAffected}", 
+                    state.RepoPath, state.CollectionName, state.BranchContext, rowsAffected);
+            }
+            finally
+            {
+                _semaphore.Release();
+            }
+        }
+
+        /// <summary>
+        /// Gets all sync states for a repository
+        /// </summary>
+        public async Task<List<SyncStateRecord>> GetAllSyncStatesAsync(string repoPath)
+        {
+            await _semaphore.WaitAsync();
+            try
+            {
+                using var connection = new SqliteConnection($"Data Source={_dbPath}");
+                await connection.OpenAsync();
+
+                const string sql = @"
+                    SELECT id, repo_path, collection_name, branch_context, last_sync_commit, 
+                           last_sync_at, document_count, chunk_count, embedding_model, 
+                           sync_status, local_changes_count, error_message, metadata, 
+                           created_at, updated_at
+                    FROM sync_state 
+                    WHERE repo_path = @repoPath
+                    ORDER BY collection_name, branch_context";
+
+                using var command = new SqliteCommand(sql, connection);
+                command.Parameters.AddWithValue("@repoPath", repoPath);
+
+                return await ReadSyncStateRecordsAsync(command);
+            }
+            finally
+            {
+                _semaphore.Release();
+            }
+        }
+
+        /// <summary>
+        /// Clears all sync states for a specific branch
+        /// </summary>
+        public async Task ClearBranchSyncStatesAsync(string repoPath, string branchContext)
+        {
+            await _semaphore.WaitAsync();
+            try
+            {
+                using var connection = new SqliteConnection($"Data Source={_dbPath}");
+                await connection.OpenAsync();
+
+                const string sql = @"
+                    DELETE FROM sync_state 
+                    WHERE repo_path = @repoPath AND branch_context = @branchContext";
+
+                using var command = new SqliteCommand(sql, connection);
+                command.Parameters.AddWithValue("@repoPath", repoPath);
+                command.Parameters.AddWithValue("@branchContext", branchContext);
+
+                await command.ExecuteNonQueryAsync();
+            }
+            finally
+            {
+                _semaphore.Release();
+            }
+        }
+
+        /// <summary>
+        /// Reconstructs sync state after a branch checkout (placeholder implementation)
+        /// </summary>
+        public async Task<bool> ReconstructSyncStateAsync(string repoPath, string newBranch)
+        {
+            // TODO: Implement reconstruction logic based on actual Dolt content
+            // For Phase 1, return true as placeholder
+            await Task.CompletedTask;
+            _logger.LogDebug($"Sync state reconstruction requested for repo {repoPath}, branch {newBranch}");
+            return true;
+        }
+
+        /// <summary>
+        /// Gets sync states for a specific branch
+        /// </summary>
+        public async Task<List<SyncStateRecord>> GetBranchSyncStatesAsync(string repoPath, string branchContext)
+        {
+            await _semaphore.WaitAsync();
+            try
+            {
+                using var connection = new SqliteConnection($"Data Source={_dbPath}");
+                await connection.OpenAsync();
+
+                const string sql = @"
+                    SELECT id, repo_path, collection_name, branch_context, last_sync_commit, 
+                           last_sync_at, document_count, chunk_count, embedding_model, 
+                           sync_status, local_changes_count, error_message, metadata, 
+                           created_at, updated_at
+                    FROM sync_state 
+                    WHERE repo_path = @repoPath AND branch_context = @branchContext
+                    ORDER BY collection_name";
+
+                using var command = new SqliteCommand(sql, connection);
+                command.Parameters.AddWithValue("@repoPath", repoPath);
+                command.Parameters.AddWithValue("@branchContext", branchContext);
+
+                return await ReadSyncStateRecordsAsync(command);
+            }
+            finally
+            {
+                _semaphore.Release();
+            }
+        }
+
+        /// <summary>
+        /// Deletes a specific sync state record
+        /// </summary>
+        public async Task DeleteSyncStateAsync(string repoPath, string collectionName, string? branchContext = null)
+        {
+            await _semaphore.WaitAsync();
+            try
+            {
+                using var connection = new SqliteConnection($"Data Source={_dbPath}");
+                await connection.OpenAsync();
+
+                const string sql = @"
+                    DELETE FROM sync_state 
+                    WHERE repo_path = @repoPath AND collection_name = @collectionName 
+                    AND (branch_context = @branchContext OR (@branchContext IS NULL AND branch_context IS NULL))";
+
+                using var command = new SqliteCommand(sql, connection);
+                command.Parameters.AddWithValue("@repoPath", repoPath);
+                command.Parameters.AddWithValue("@collectionName", collectionName);
+                command.Parameters.AddWithValue("@branchContext", (object?)branchContext ?? DBNull.Value);
+
+                await command.ExecuteNonQueryAsync();
+            }
+            finally
+            {
+                _semaphore.Release();
+            }
+        }
+
+        /// <summary>
+        /// Updates the commit hash for a sync state
+        /// </summary>
+        public async Task UpdateCommitHashAsync(string repoPath, string collectionName, string commitHash, string? branchContext = null)
+        {
+            await _semaphore.WaitAsync();
+            try
+            {
+                using var connection = new SqliteConnection($"Data Source={_dbPath}");
+                await connection.OpenAsync();
+
+                const string sql = @"
+                    UPDATE sync_state 
+                    SET last_sync_commit = @commitHash, updated_at = @updatedAt
+                    WHERE repo_path = @repoPath AND collection_name = @collectionName 
+                    AND (branch_context = @branchContext OR (@branchContext IS NULL AND branch_context IS NULL))";
+
+                using var command = new SqliteCommand(sql, connection);
+                command.Parameters.AddWithValue("@repoPath", repoPath);
+                command.Parameters.AddWithValue("@collectionName", collectionName);
+                command.Parameters.AddWithValue("@commitHash", commitHash);
+                command.Parameters.AddWithValue("@branchContext", (object?)branchContext ?? DBNull.Value);
+                command.Parameters.AddWithValue("@updatedAt", DateTime.UtcNow);
+
+                await command.ExecuteNonQueryAsync();
+            }
+            finally
+            {
+                _semaphore.Release();
+            }
+        }
+
+        /// <summary>
+        /// Cleans up stale sync states (placeholder implementation)
+        /// </summary>
+        public async Task CleanupStaleSyncStatesAsync(string repoPath)
+        {
+            // TODO: Implement cleanup logic for deleted collections
+            await Task.CompletedTask;
+            _logger.LogDebug($"Sync state cleanup requested for repo {repoPath}");
+        }
+
+        /// <summary>
+        /// Reads sync state records from a command result
+        /// </summary>
+        private async Task<List<SyncStateRecord>> ReadSyncStateRecordsAsync(SqliteCommand command)
+        {
+            var records = new List<SyncStateRecord>();
+            using var reader = await command.ExecuteReaderAsync();
+            
+            while (await reader.ReadAsync())
+            {
+                var record = new SyncStateRecord(
+                    reader.GetString("id"),
+                    reader.GetString("repo_path"),
+                    reader.GetString("collection_name"),
+                    reader.IsDBNull("branch_context") ? null : reader.GetString("branch_context"),
+                    reader.IsDBNull("last_sync_commit") ? null : reader.GetString("last_sync_commit"),
+                    reader.IsDBNull("last_sync_at") ? null : reader.GetDateTime("last_sync_at"),
+                    reader.GetInt32("document_count"),
+                    reader.GetInt32("chunk_count"),
+                    reader.IsDBNull("embedding_model") ? null : reader.GetString("embedding_model"),
+                    reader.GetString("sync_status"),
+                    reader.GetInt32("local_changes_count"),
+                    reader.IsDBNull("error_message") ? null : reader.GetString("error_message"),
+                    reader.IsDBNull("metadata") ? null : reader.GetString("metadata"),
+                    reader.GetDateTime("created_at"),
+                    reader.GetDateTime("updated_at")
+                );
+                records.Add(record);
+            }
+            
+            return records;
+        }
+
 
         #endregion
 

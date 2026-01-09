@@ -91,7 +91,8 @@ namespace DMMS.Testing.IntegrationTests
             _syncManager = new SyncManagerV2(
                 _doltCli, 
                 _chromaService,
-                _deletionTracker,
+                _deletionTracker,        // IDeletionTracker
+                (ISyncStateTracker)_deletionTracker,        // ISyncStateTracker (same object implements both interfaces)
                 doltConfig,
                 _loggerFactory.CreateLogger<SyncManagerV2>()
             );

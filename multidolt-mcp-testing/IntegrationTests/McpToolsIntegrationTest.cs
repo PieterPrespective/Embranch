@@ -110,9 +110,9 @@ namespace DMMSTesting.IntegrationTests
             user.DoltCommitsTool = new DoltCommitsTool(
                 loggerFactory.CreateLogger<DoltCommitsTool>(), user.DoltCli);
             user.DoltCommitTool = new DoltCommitTool(
-                loggerFactory.CreateLogger<DoltCommitTool>(), user.DoltCli, user.SyncManager);
+                loggerFactory.CreateLogger<DoltCommitTool>(), user.DoltCli, user.SyncManager, (ISyncStateTracker)user.DeletionTracker);
             user.DoltCheckoutTool = new DoltCheckoutTool(
-                loggerFactory.CreateLogger<DoltCheckoutTool>(), user.DoltCli, user.SyncManager);
+                loggerFactory.CreateLogger<DoltCheckoutTool>(), user.DoltCli, user.SyncManager, (ISyncStateTracker)user.DeletionTracker);
             user.DoltPullTool = new DoltPullTool(
                 loggerFactory.CreateLogger<DoltPullTool>(), user.DoltCli, user.SyncManager);
             user.DoltPushTool = new DoltPushTool(
@@ -120,7 +120,7 @@ namespace DMMSTesting.IntegrationTests
             user.DoltFetchTool = new DoltFetchTool(
                 loggerFactory.CreateLogger<DoltFetchTool>(), user.DoltCli);
             user.DoltCloneTool = new DoltCloneTool(
-                loggerFactory.CreateLogger<DoltCloneTool>(), user.DoltCli, user.SyncManager, 
+                loggerFactory.CreateLogger<DoltCloneTool>(), user.DoltCli, user.SyncManager, (ISyncStateTracker)user.DeletionTracker,
                 Options.Create(new DoltConfiguration { RepositoryPath = user.DoltRepoPath, DoltExecutablePath = "dolt" }));
             user.DoltResetTool = new DoltResetTool(
                 loggerFactory.CreateLogger<DoltResetTool>(), user.DoltCli, user.SyncManager);
@@ -805,7 +805,7 @@ namespace DMMSTesting.IntegrationTests
             
             // Create V2 sync manager
             var syncLogger = LoggerFactory.Create(b => b.AddConsole()).CreateLogger<SyncManagerV2>();
-            SyncManager = new SyncManagerV2(DoltCli, ChromaService, DeletionTracker, Options.Create(DoltConfig), syncLogger);
+            SyncManager = new SyncManagerV2(DoltCli, ChromaService, DeletionTracker, (ISyncStateTracker)DeletionTracker, Options.Create(DoltConfig), syncLogger);
         }
         
         public void Dispose()

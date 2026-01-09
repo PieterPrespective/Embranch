@@ -13,8 +13,8 @@ public class ChromaDbService : ChromaPythonService
     /// <summary>
     /// Initializes a new instance of the ChromaDbService
     /// </summary>
-    public ChromaDbService(ILogger<ChromaDbService> logger, IOptions<ServerConfiguration> configuration)
-        : base(logger, configuration)
+    public ChromaDbService(ILogger<ChromaDbService> logger, IOptions<ServerConfiguration> configuration, IDocumentIdResolver? idResolver = null)
+        : base(logger, configuration, idResolver)
     {
         // Base class will automatically use HttpClient when ChromaDataPath is empty
         // and PersistentClient when ChromaDataPath is set

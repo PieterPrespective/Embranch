@@ -286,6 +286,119 @@ namespace DMMS.Models
     }
 
     /// <summary>
+    /// Content comparison data for a document across branches
+    /// </summary>
+    public class ContentComparison
+    {
+        /// <summary>
+        /// Table/collection name containing the document
+        /// </summary>
+        public string TableName { get; set; } = string.Empty;
+        
+        /// <summary>
+        /// Document identifier
+        /// </summary>
+        public string DocumentId { get; set; } = string.Empty;
+        
+        /// <summary>
+        /// Content from the base/common ancestor
+        /// </summary>
+        public DocumentContent? BaseContent { get; set; }
+        
+        /// <summary>
+        /// Content from the source branch
+        /// </summary>
+        public DocumentContent? SourceContent { get; set; }
+        
+        /// <summary>
+        /// Content from the target branch
+        /// </summary>
+        public DocumentContent? TargetContent { get; set; }
+        
+        /// <summary>
+        /// Whether there are conflicts between source and target
+        /// </summary>
+        public bool HasConflicts { get; set; }
+        
+        /// <summary>
+        /// List of fields that have conflicts
+        /// </summary>
+        public List<string> ConflictingFields { get; set; } = new();
+        
+        /// <summary>
+        /// Suggested resolution based on content analysis
+        /// </summary>
+        public string SuggestedResolution { get; set; } = string.Empty;
+    }
+
+    /// <summary>
+    /// Document content with metadata
+    /// </summary>
+    public class DocumentContent
+    {
+        /// <summary>
+        /// The main content/body of the document
+        /// </summary>
+        public string? Content { get; set; }
+        
+        /// <summary>
+        /// Document metadata as key-value pairs
+        /// </summary>
+        public Dictionary<string, object> Metadata { get; set; } = new();
+        
+        /// <summary>
+        /// Last modified timestamp if available
+        /// </summary>
+        public DateTime? LastModified { get; set; }
+        
+        /// <summary>
+        /// Commit hash where this version exists
+        /// </summary>
+        public string CommitHash { get; set; } = string.Empty;
+        
+        /// <summary>
+        /// Whether this document exists in this branch
+        /// </summary>
+        public bool Exists { get; set; } = true;
+    }
+
+    /// <summary>
+    /// Resolution preview showing what would happen with each resolution option
+    /// </summary>
+    public class ResolutionPreview
+    {
+        /// <summary>
+        /// The conflict ID this preview is for
+        /// </summary>
+        public string ConflictId { get; set; } = string.Empty;
+        
+        /// <summary>
+        /// Resolution type being previewed
+        /// </summary>
+        public ResolutionType ResolutionType { get; set; }
+        
+        /// <summary>
+        /// The resulting document content after resolution
+        /// </summary>
+        public DocumentContent ResultingContent { get; set; } = new();
+        
+        /// <summary>
+        /// Fields that would be lost/overwritten
+        /// </summary>
+        public List<string> DataLossWarnings { get; set; } = new();
+        
+        /// <summary>
+        /// Confidence level for auto-merge (0-100)
+        /// </summary>
+        public int ConfidenceLevel { get; set; }
+        
+        /// <summary>
+        /// Human-readable description of what this resolution does
+        /// </summary>
+        public string Description { get; set; } = string.Empty;
+    }
+
+    /// <summary>
     /// Types of conflicts that can occur during merge
     /// </summary>
     public enum ConflictType

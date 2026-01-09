@@ -215,7 +215,33 @@ namespace DMMS.Services
 
         public async Task<DoltCommandResult> InitAsync()
         {
-            return await ExecuteDoltCommandAsync("init");
+            var result = await ExecuteDoltCommandAsync("init");
+            
+            // After init, we need to create an initial commit to establish proper database state
+            // This fixes the "no database selected" issue in multi-user scenarios (PP13-68-C2)
+            if (result.Success)
+            {
+                try
+                {
+                    // Create a minimal initial commit to establish database context
+                    // This pattern is based on PP13-42 and PP13-43 solutions
+                    var addResult = await ExecuteDoltCommandAsync("add", ".");
+                    if (addResult.Success)
+                    {
+                        var commitResult = await ExecuteDoltCommandAsync("commit", "-m", "Initial repository setup", "--allow-empty");
+                        if (!commitResult.Success)
+                        {
+                            _logger.LogDebug("Could not create initial commit: {Error}", commitResult.Error);
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogDebug("Could not create initial commit after init: {Message}", ex.Message);
+                }
+            }
+            
+            return result;
         }
 
         public async Task<DoltCommandResult> CloneAsync(string remoteUrl, string? localPath = null)
@@ -281,19 +307,32 @@ namespace DMMS.Services
 
         /// <summary>
         /// Implementation Note: Uses SQL function active_branch() rather than 'dolt branch' command
-        /// to get reliable machine-readable output.
+        /// to get reliable machine-readable output. Falls back to 'dolt branch --show-current' if SQL fails (PP13-68-C2).
         /// </summary>
         public async Task<string> GetCurrentBranchAsync()
         {
-            var json = await ExecuteSqlJsonAsync("SELECT active_branch() as branch");
-            using var doc = JsonDocument.Parse(json);
-            
-            if (doc.RootElement.TryGetProperty("rows", out var rows))
+            try
             {
-                var firstRow = rows.EnumerateArray().FirstOrDefault();
-                if (firstRow.ValueKind != JsonValueKind.Undefined && firstRow.TryGetProperty("branch", out var branch))
+                var json = await ExecuteSqlJsonAsync("SELECT active_branch() as branch");
+                using var doc = JsonDocument.Parse(json);
+                
+                if (doc.RootElement.TryGetProperty("rows", out var rows))
                 {
-                    return branch.GetString();
+                    var firstRow = rows.EnumerateArray().FirstOrDefault();
+                    if (firstRow.ValueKind != JsonValueKind.Undefined && firstRow.TryGetProperty("branch", out var branch))
+                    {
+                        return branch.GetString();
+                    }
+                }
+            }
+            catch (DoltException ex) when (ex.Message.Contains("no database selected"))
+            {
+                // Fallback to using dolt branch command when SQL fails due to database context issues (PP13-68-C2)
+                _logger.LogDebug("SQL query for current branch failed, falling back to 'dolt branch --show-current'");
+                var result = await ExecuteDoltCommandAsync("branch", "--show-current");
+                if (result.Success && !string.IsNullOrWhiteSpace(result.Output))
+                {
+                    return result.Output.Trim();
                 }
             }
             

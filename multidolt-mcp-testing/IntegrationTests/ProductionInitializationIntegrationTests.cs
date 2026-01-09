@@ -37,6 +37,10 @@ namespace DMMS.IntegrationTests
             // Create .dolt directory for database
             var doltDir = Path.Combine(_tempDir, ".dolt");
             Directory.CreateDirectory(doltDir);
+            
+            // Create chroma data directory
+            var chromaDataDir = Path.Combine(_tempDir, "chroma_data");
+            Directory.CreateDirectory(chromaDataDir);
 
             // Setup configurations
             _doltConfig = new DoltConfiguration
@@ -50,8 +54,8 @@ namespace DMMS.IntegrationTests
 
             _serverConfig = new ServerConfiguration
             {
-                ChromaHost = "localhost",
-                ChromaPort = 8000,
+                ChromaDataPath = Path.Combine(_tempDir, "chroma_data"),
+                ChromaMode = "persistent",
                 DataPath = _tempDir
             };
 
@@ -93,6 +97,7 @@ namespace DMMS.IntegrationTests
             services.AddSingleton(_mockChromaService.Object);
             services.AddSingleton(_mockDoltCli.Object);
             services.AddSingleton<IDeletionTracker, SqliteDeletionTracker>();
+            services.AddSingleton<ISyncStateTracker>(sp => sp.GetRequiredService<IDeletionTracker>() as ISyncStateTracker);
             services.AddSingleton<ICollectionChangeDetector, CollectionChangeDetector>();
             services.AddSingleton<ISyncManagerV2, SyncManagerV2>();
             services.AddLogging(builder => builder.AddConsole().SetMinimumLevel(LogLevel.Debug));
@@ -374,6 +379,7 @@ namespace DMMS.IntegrationTests
             services.AddSingleton(_mockChromaService.Object);
             services.AddSingleton(_mockDoltCli.Object);
             services.AddSingleton<IDeletionTracker, SqliteDeletionTracker>();
+            services.AddSingleton<ISyncStateTracker>(sp => sp.GetRequiredService<IDeletionTracker>() as ISyncStateTracker);
             services.AddSingleton(mockLoggerFactory.Object);
             services.AddLogging();
             

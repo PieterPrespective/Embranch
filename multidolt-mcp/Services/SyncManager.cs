@@ -521,8 +521,8 @@ namespace DMMS.Services
             _logger.LogDebug("Built metadata for {ChunkCount} chunks of document {SourceId}", 
                 chunks.Count, diff.SourceId);
 
-            // Add to ChromaDB
-            await _chromaManager.AddDocumentsAsync(collectionName, chunks, chunkIds, metadatas);
+            // Add to ChromaDB - sync operation, should not mark as local change (PP13-68-C2 fix)
+            await _chromaManager.AddDocumentsAsync(collectionName, chunks, chunkIds, metadatas, allowDuplicateIds: false, markAsLocalChange: false);
 
             // Update sync log
             await UpdateDocumentSyncLogAsync(diff, collectionName, chunkIds, "added");
@@ -547,8 +547,8 @@ namespace DMMS.Services
                 ["source_table"] = delta.SourceTable
             }).ToList();
 
-            // Add to ChromaDB
-            await _chromaManager.AddDocumentsAsync(collectionName, chunks, chunkIds, metadatas);
+            // Add to ChromaDB - sync operation, should not mark as local change (PP13-68-C2 fix)
+            await _chromaManager.AddDocumentsAsync(collectionName, chunks, chunkIds, metadatas, allowDuplicateIds: false, markAsLocalChange: false);
 
             // Update sync log  
             await UpdateDocumentDeltaSyncLogAsync(delta, collectionName, chunkIds, "added");

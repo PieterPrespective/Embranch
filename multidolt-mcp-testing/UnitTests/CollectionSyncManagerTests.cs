@@ -77,6 +77,7 @@ public class CollectionSyncManagerTests
             _mockDoltCli.Object,
             _mockChromaService.Object,
             _mockDeletionTracker.Object,
+            Mock.Of<ISyncStateTracker>(), // ISyncStateTracker (separate mock for interface)
             _mockDoltOptions.Object,
             _mockLogger.Object
         );

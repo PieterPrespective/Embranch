@@ -103,6 +103,7 @@ namespace DMMS.Testing.IntegrationTests
                 _doltCli,
                 _chromaService,
                 deletionTracker,
+                deletionTracker,
                 doltConfig,
                 loggerFactory.CreateLogger<SyncManagerV2>());
 

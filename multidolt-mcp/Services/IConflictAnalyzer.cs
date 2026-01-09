@@ -37,5 +37,30 @@ namespace DMMS.Services
         /// <param name="conflict">Conflict to analyze for auto-resolution potential</param>
         /// <returns>True if conflict can be automatically resolved</returns>
         Task<bool> CanAutoResolveConflictAsync(DetailedConflictInfo conflict);
+
+        /// <summary>
+        /// Get content comparison for a specific document across branches
+        /// Shows base, source, and target content for detailed comparison
+        /// </summary>
+        /// <param name="tableName">Name of the table/collection containing the document</param>
+        /// <param name="documentId">ID of the document to compare</param>
+        /// <param name="sourceBranch">Source branch name</param>
+        /// <param name="targetBranch">Target branch name</param>
+        /// <returns>Content comparison data for the document</returns>
+        Task<ContentComparison> GetContentComparisonAsync(
+            string tableName,
+            string documentId,
+            string sourceBranch,
+            string targetBranch);
+
+        /// <summary>
+        /// Generate resolution preview showing what each resolution option would produce
+        /// </summary>
+        /// <param name="conflict">The conflict to generate preview for</param>
+        /// <param name="resolutionType">Type of resolution to preview</param>
+        /// <returns>Preview of the resolution outcome</returns>
+        Task<ResolutionPreview> GenerateResolutionPreviewAsync(
+            DetailedConflictInfo conflict,
+            ResolutionType resolutionType);
     }
 }

@@ -130,12 +130,13 @@ public class ChromaUpdateDocumentsTool
                 metadatas[i]["update_source"] = "mcp_tool";
             }
 
-            // Update documents
+            // Update documents (PP13-68-C2: this is user action, keep markAsLocalChange=true)
             await _chromaService.UpdateDocumentsAsync(
                 collection_name,
                 ids,
                 documents: documents,
-                metadatas: metadatas
+                metadatas: metadatas,
+                markAsLocalChange: true
             );
 
             ToolLoggingUtility.LogToolSuccess(_logger, toolName, methodName, $"Successfully updated {ids.Count} documents in collection '{collection_name}'");

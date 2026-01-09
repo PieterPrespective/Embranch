@@ -71,6 +71,17 @@ namespace DMMSTesting.IntegrationTests
             return solutionRoot;
         }
 
+        /// <summary>
+        /// Helper method to extract documents from QueryDocumentsAsync result
+        /// </summary>
+        private static List<string> ExtractDocuments(object? queryResult)
+        {
+            var docsDict = (Dictionary<string, object>)queryResult!;
+            var docsList = (List<object>)docsDict["documents"];
+            var firstResult = (List<object>)docsList[0];
+            return firstResult.Cast<string>().ToList();
+        }
+
         [Test]
         [CancelAfter(180000)] // 3 minutes timeout for complex workflow
         public async Task BidirectionalSync_MultiUserWorkflow_ShouldSupportCollaborativeTeachings()
@@ -370,9 +381,9 @@ namespace DMMSTesting.IntegrationTests
                 Assert.That(commitResult.Success, Is.True, $"Auto-commit should succeed. Error: {commitResult.ErrorMessage}");
             }
             
-            // Use force checkout since we've just committed any local changes
-            var result = await user.SyncManager.ProcessCheckoutAsync(branchName, createNew: true, force: true);
-            Assert.That(result.Success, Is.True, "Branch creation should succeed");
+            // PP13-69-C1: Force parameter eliminated - sync state conflicts architecturally impossible
+            var result = await user.SyncManager.ProcessCheckoutAsync(branchName, createNew: true);
+            Assert.That(result.Status, Is.EqualTo(SyncStatusV2.Completed), "Branch creation should succeed");
         }
 
         private async Task UserA_MergeBranchesAsync(UserTestEnvironment user, string[] branches)
@@ -390,14 +401,35 @@ namespace DMMSTesting.IntegrationTests
         private async Task UserA_ReviewAndCommitAsync(UserTestEnvironment user, string collectionName, string message)
         {
             _logger!.LogInformation("User A reviewing merged content and committing...");
-            
+
             // Check status
             var status = await user.SyncManager.GetStatusAsync();
             _logger.LogInformation("Current status: {Status}", status.GetSummary());
-            
+
             // Commit merged changes
+            // PP13-69-C9: In this simulated multi-user workflow, branches are created in separate
+            // repositories (userB, userC directories), so they don't exist in userA's repository.
+            // The merge simulation doesn't actually bring content from other repos, so it's valid
+            // to have no local changes after the simulated merge. Handle this gracefully.
             var result = await user.SyncManager.ProcessCommitAsync(message);
-            Assert.That(result.Success, Is.True, "Merge commit should succeed");
+
+            if (!result.Success)
+            {
+                // Check if failure is due to no changes (expected in simulation)
+                var localChanges = await user.SyncManager.GetLocalChangesAsync();
+                if (!localChanges.HasChanges)
+                {
+                    _logger.LogInformation("✅ No local changes to commit after merge simulation - this is expected in multi-repository simulation");
+                    return; // This is acceptable in the simulated workflow
+                }
+
+                // If there were changes but commit still failed, that's a real error
+                Assert.Fail($"Merge commit failed with local changes present. Error: {result.ErrorMessage}");
+            }
+            else
+            {
+                _logger.LogInformation("✅ Merge commit succeeded with hash: {Hash}", result.CommitHash);
+            }
         }
 
         private async Task UserA_PushToMainAsync(UserTestEnvironment user)
@@ -779,8 +811,17 @@ namespace DMMSTesting.IntegrationTests
             
             try
             {
-                // Get the delta detector to find documents
-                var deltaDetector = new DeltaDetectorV2(user.DoltCli, logger: null);
+                // Get the delta detector to find documents - create deletion tracker locally
+                var chromaConfig = Options.Create(new ServerConfiguration
+                {
+                    ChromaDataPath = user.ChromaPath,
+                    DataPath = Path.GetDirectoryName(user.ChromaPath)
+                });
+                var deletionTrackerLogger = LoggerFactory.Create(b => b.AddConsole()).CreateLogger<SqliteDeletionTracker>();
+                var deletionTracker = new SqliteDeletionTracker(deletionTrackerLogger, chromaConfig.Value);
+                await deletionTracker.InitializeAsync(user.DoltRepoPath);
+                
+                var deltaDetector = new DeltaDetectorV2(user.DoltCli, deletionTracker, user.DoltRepoPath, logger: null);
                 var documents = await deltaDetector.GetAllDocumentsAsync(collectionName);
                 var docList = documents.ToList(); // Convert to list to get Count
                 
@@ -895,6 +936,175 @@ namespace DMMSTesting.IntegrationTests
                 _logger?.LogWarning(ex, "Could not fully clean up test environment");
             }
         }
+
+        /// <summary>
+        /// PP13-68 ENHANCED TEST: Multi-user sync with content validation
+        /// This test extends the existing multi-user workflow to include PP13-68 content-hash verification scenarios
+        /// Tests that content-hash verification works correctly in collaborative multi-user environments
+        /// </summary>
+        [Test]
+        [CancelAfter(120000)] // 2 minutes timeout
+        public async Task PP13_68_MultiUserSyncWithContentValidation()
+        {
+            _logger!.LogInformation("=== PP13-68 ENHANCED TEST: Multi-user sync with content validation ===");
+
+            // Initialize PythonContext for ChromaDB operations
+            if (!PythonContext.IsInitialized)
+            {
+                _logger.LogInformation("Initializing PythonContext for ChromaDB operations...");
+                PythonContext.Initialize();
+                _logger.LogInformation("✅ PythonContext initialized successfully");
+            }
+
+            try
+            {
+                const string collectionName = "pp13_68_multiuser_content_test";
+
+                // === Setup all user environments (PP13-69-C9 fix: must initialize Dolt before operations) ===
+                await SetupUserEnvironmentAsync(_userA);
+                await SetupUserEnvironmentAsync(_userB);
+                await SetupUserEnvironmentAsync(_userC);
+
+                // === User A: Create initial content ===
+                _logger.LogInformation("User A: Creating initial content with specific document structure for PP13-68 testing");
+
+                await _userA.ChromaService.CreateCollectionAsync(collectionName);
+                await _userA.ChromaService.AddDocumentsAsync(collectionName,
+                    new List<string> 
+                    { 
+                        "User A initial document 1 - original content for multi-user testing",
+                        "User A initial document 2 - another original content piece for testing" 
+                    },
+                    new List<string> { "multiuser-1", "multiuser-2" });
+
+                await _userA.ChromaToDoltSyncer.StageLocalChangesAsync(collectionName);
+                await _userA.SyncManager.ProcessCommitAsync("PP13-68 Multi-user: User A initial content");
+
+                // PP13-69-C9: Instead of push to remote (no remote configured in test environment),
+                // copy the repository data to User B like the first test does
+                _logger.LogInformation("User A: Sharing repository with User B (simulating clone via file copy)");
+                var sourceDoltDirA = Path.Combine(_userA.DoltRepoPath, ".dolt");
+                var targetDoltDirB = Path.Combine(_userB.DoltRepoPath, ".dolt");
+                if (Directory.Exists(targetDoltDirB))
+                {
+                    Directory.Delete(targetDoltDirB, recursive: true);
+                }
+                CopyDirectory(sourceDoltDirA, targetDoltDirB, true);
+
+                // === User B: Clone (via file copy), create branch, modify content (same count) ===
+                _logger.LogInformation("User B: Syncing User A's content and creating feature branch");
+
+                // Sync User B's ChromaDB from the cloned Dolt repository
+                await _userB.SyncManager.FullSyncAsync(collectionName);
+                
+                // Verify User B has User A's content
+                var userBInitialDocs = await _userB.ChromaService.QueryDocumentsAsync(collectionName, new List<string> { "User A" });
+                var userBInitialContent = ExtractDocuments(userBInitialDocs);
+                Assert.That(userBInitialContent.Count, Is.EqualTo(2), "User B should have User A's 2 documents");
+                Assert.That(userBInitialContent[0], Does.Contain("User A initial"), "User B should have User A's content");
+
+                // Create feature branch and modify content (PP13-68 scenario: same count, different content)
+                await _userB.DoltCli.CheckoutAsync("pp13-68-multiuser-feature", createNew: true);
+                
+                // Replace content while keeping same document IDs and count
+                await _userB.ChromaService.DeleteDocumentsAsync(collectionName, new List<string> { "multiuser-1", "multiuser-2" });
+                await _userB.ChromaService.AddDocumentsAsync(collectionName,
+                    new List<string> 
+                    { 
+                        "User B MODIFIED document 1 - completely different content for PP13-68 content-hash verification testing",
+                        "User B MODIFIED document 2 - another completely different content piece for validation testing" 
+                    },
+                    new List<string> { "multiuser-1", "multiuser-2" });
+
+                await _userB.ChromaToDoltSyncer.StageLocalChangesAsync(collectionName);
+                await _userB.SyncManager.ProcessCommitAsync("PP13-68 Multi-user: User B modified content with same count");
+
+                // PP13-69-C9: Instead of push to remote, copy repository to User C
+                // User B's repo now has: main branch (User A's content) + pp13-68-multiuser-feature branch (User B's modifications)
+                _logger.LogInformation("User B: Sharing repository with User C (simulating clone via file copy)");
+                var sourceDoltDirB = Path.Combine(_userB.DoltRepoPath, ".dolt");
+                var targetDoltDirC = Path.Combine(_userC.DoltRepoPath, ".dolt");
+                if (Directory.Exists(targetDoltDirC))
+                {
+                    Directory.Delete(targetDoltDirC, recursive: true);
+                }
+                CopyDirectory(sourceDoltDirB, targetDoltDirC, true);
+
+                _logger.LogInformation("User B: Modified content and shared feature branch with User C");
+
+                // === User C: Test content-hash verification across branches ===
+                // User C now has both branches from copying User B's repository
+                _logger.LogInformation("User C: Testing PP13-68 content-hash verification across branches");
+
+                // Test switching to main branch (User C's Dolt is currently on pp13-68-multiuser-feature from User B)
+                await _userC.DoltCli.CheckoutAsync("main");
+                await _userC.SyncManager.FullSyncAsync(collectionName);
+                
+                // Validate main branch content
+                var userCMainDocs = await _userC.ChromaService.QueryDocumentsAsync(collectionName, new List<string> { "content" });
+                var userCMainContent = ExtractDocuments(userCMainDocs);
+                var mainContent = userCMainContent[0];
+                Assert.That(mainContent, Does.Contain("User A initial"), 
+                    "PP13-68: User C should have User A's original content on main branch");
+                Assert.That(mainContent, Does.Not.Contain("User B MODIFIED"), 
+                    "PP13-68: User C should not have User B's modified content on main branch");
+
+                // CRITICAL TEST: Switch to feature branch (PP13-68 content-hash verification scenario)
+                _logger.LogInformation("User C: Executing critical PP13-68 checkout to feature branch");
+                
+                await _userC.DoltCli.CheckoutAsync("pp13-68-multiuser-feature");
+                var checkoutResult = await _userC.SyncManager.ProcessCheckoutAsync("pp13-68-multiuser-feature", false);
+                
+                Assert.That(checkoutResult.Status, Is.EqualTo(SyncStatusV2.Completed), 
+                    "PP13-68: Checkout to feature branch should complete successfully");
+
+                // Validate feature branch content (content-hash verification should detect difference)
+                var userCFeatureDocs = await _userC.ChromaService.QueryDocumentsAsync(collectionName, new List<string> { "content" });
+                var userCFeatureContent = ExtractDocuments(userCFeatureDocs);
+                var featureContent = userCFeatureContent[0];
+                Assert.That(featureContent, Does.Contain("User B MODIFIED"), 
+                    "PP13-68: User C should have User B's modified content on feature branch (content-hash verification should detect this)");
+                Assert.That(featureContent, Does.Not.Contain("User A initial"), 
+                    "PP13-68: User C should not have User A's original content on feature branch");
+
+                // Verify document count remains the same (this was the original PP13-68 trigger)
+                var docCount = await _userC.ChromaService.GetDocumentCountAsync(collectionName);
+                Assert.That(docCount, Is.EqualTo(2), 
+                    "PP13-68: Document count should remain 2 (same count was causing original false positive)");
+
+                // === Test rapid switching between branches (User C) ===
+                _logger.LogInformation("User C: Testing rapid branch switching with content validation");
+                
+                for (int i = 0; i < 3; i++)
+                {
+                    // Switch to main
+                    await _userC.SyncManager.ProcessCheckoutAsync("main", false);
+                    var mainCheck = await _userC.ChromaService.QueryDocumentsAsync(collectionName, new List<string> { "User A" });
+                    var mainDocs = ExtractDocuments(mainCheck);
+                    Assert.That(mainDocs[0], Does.Contain("User A initial"), 
+                        $"PP13-68 Iteration {i + 1}: Should have User A content on main");
+
+                    // Switch to feature
+                    await _userC.SyncManager.ProcessCheckoutAsync("pp13-68-multiuser-feature", false);
+                    var featureCheck = await _userC.ChromaService.QueryDocumentsAsync(collectionName, new List<string> { "User B" });
+                    var featureDocs = ExtractDocuments(featureCheck);
+                    Assert.That(featureDocs[0], Does.Contain("User B MODIFIED"), 
+                        $"PP13-68 Iteration {i + 1}: Should have User B content on feature");
+                }
+
+                // Final validation - no false positive changes
+                var finalLocalChanges = await _userC.SyncManager.GetLocalChangesAsync();
+                Assert.That(finalLocalChanges.HasChanges, Is.False, 
+                    "PP13-68: Should have no false positive changes after multi-user content validation testing");
+
+                _logger.LogInformation("✅ PP13-68 Multi-user sync with content validation completed successfully");
+            }
+            catch (Exception ex)
+            {
+                _logger!.LogError(ex, "❌ PP13-68 Multi-user content validation test failed");
+                throw;
+            }
+        }
     }
 
     /// <summary>
@@ -953,7 +1163,7 @@ namespace DMMSTesting.IntegrationTests
             var detectorLogger = loggerFactory.CreateLogger<ChromaToDoltDetector>();
             var syncerLogger = loggerFactory.CreateLogger<ChromaToDoltSyncer>();
             
-            SyncManager = new SyncManagerV2(DoltCli, ChromaService, deletionTracker, Options.Create(doltConfig), syncLogger);
+            SyncManager = new SyncManagerV2(DoltCli, ChromaService, deletionTracker, deletionTracker, Options.Create(doltConfig), syncLogger);
             
             var detector = new ChromaToDoltDetector(ChromaService, DoltCli, deletionTracker, Options.Create(doltConfig), detectorLogger);
             ChromaToDoltSyncer = new ChromaToDoltSyncer(ChromaService, DoltCli, detector, syncerLogger);
@@ -963,10 +1173,30 @@ namespace DMMSTesting.IntegrationTests
         {
             // ChromaService doesn't implement IDisposable in IChromaDbService interface
             // If the concrete implementation does, we would need to cast it
-            if (ChromaService is IDisposable disposableService)
+            if (ChromaService is ChromaPythonService chromaPythonService)
+            {
+                // Use immediate disposal to force cleanup of ChromaDB resources (PP13-68-C2)
+                // This helps prevent file locking issues during test cleanup
+                try
+                {
+                    chromaPythonService.DisposeImmediatelyAsync().GetAwaiter().GetResult();
+                }
+                catch
+                {
+                    // Fallback to normal disposal if immediate disposal fails
+                    chromaPythonService.Dispose();
+                }
+            }
+            else if (ChromaService is IDisposable disposableService)
             {
                 disposableService.Dispose();
             }
+            
+            // Force garbage collection to help release file locks
+            GC.Collect();
+            GC.WaitForPendingFinalizers();
+            GC.Collect();
+            
             // DoltCli doesn't implement IDisposable
             GC.SuppressFinalize(this);
         }

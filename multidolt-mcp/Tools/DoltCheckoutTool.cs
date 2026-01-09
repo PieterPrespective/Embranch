@@ -15,15 +15,17 @@ public class DoltCheckoutTool
     private readonly ILogger<DoltCheckoutTool> _logger;
     private readonly IDoltCli _doltCli;
     private readonly ISyncManagerV2 _syncManager;
+    private readonly ISyncStateTracker _syncStateTracker;
 
     /// <summary>
     /// Initializes a new instance of the DoltCheckoutTool class
     /// </summary>
-    public DoltCheckoutTool(ILogger<DoltCheckoutTool> logger, IDoltCli doltCli, ISyncManagerV2 syncManager)
+    public DoltCheckoutTool(ILogger<DoltCheckoutTool> logger, IDoltCli doltCli, ISyncManagerV2 syncManager, ISyncStateTracker syncStateTracker)
     {
         _logger = logger;
         _doltCli = doltCli;
         _syncManager = syncManager;
+        _syncStateTracker = syncStateTracker;
     }
 
     /// <summary>
@@ -100,8 +102,8 @@ public class DoltCheckoutTool
                         return new
                         {
                             success = false,
-                            error = "UNCOMMITTED_CHANGES",
-                            message = $"Checkout to '{target}' blocked: You have {localChanges?.TotalChanges ?? 0} uncommitted changes across {localChanges?.GetAffectedCollectionNames()?.Count() ?? 0} collection(s). Choose an action:",
+                            error = "UNCOMMITTED_local changes",
+                            message = $"Checkout to '{target}' blocked: You have {localChanges?.TotalChanges ?? 0} uncommitted local changes across {localChanges?.GetAffectedCollectionNames()?.Count() ?? 0} collection(s). Choose an action:",
                             suggested_actions = new[]
                             {
                                 "'commit_first' - Save your changes with a commit before switching branches",
@@ -188,12 +190,44 @@ public class DoltCheckoutTool
             };
             
             // Perform checkout using sync manager
-            bool forceOverwrite = if_uncommitted == "reset_first" || if_uncommitted == "carry";
-            ToolLoggingUtility.LogToolInfo(_logger, toolName, $"Initiating checkout to '{target}' (create={create_branch}, force={forceOverwrite})");
+            // PP13-69-C1: Force parameter eliminated - sync state conflicts architecturally impossible
+            bool preserveLocalChanges = if_uncommitted == "carry"; // Carry mode preserves local changes
+            ToolLoggingUtility.LogToolInfo(_logger, toolName, $"Initiating checkout to '{target}' (create={create_branch}, carry_mode={preserveLocalChanges})");
             
-            var checkoutResult = await _syncManager.ProcessCheckoutAsync(target, create_branch, forceOverwrite);
+            // Handle reset_first mode before checkout
+            if (if_uncommitted == "reset_first")
+            {
+                ToolLoggingUtility.LogToolInfo(_logger, toolName, "Reset first mode: performing comprehensive state reset before checkout");
+                
+                // PP13-69-C6: Comprehensive reset implementation
+                var currentBranch = await _doltCli.GetCurrentBranchAsync();
+                var resetResult = await _syncManager.PerformComprehensiveResetAsync(currentBranch ?? "main");
+                
+                if (resetResult.Status != SyncStatusV2.Completed)
+                {
+                    ToolLoggingUtility.LogToolError(_logger, toolName, $"Comprehensive reset failed: {resetResult.ErrorMessage}");
+                    return new
+                    {
+                        success = false,
+                        error = "RESET_FAILED",
+                        message = $"Comprehensive state reset failed: {resetResult.ErrorMessage}",
+                        details = new
+                        {
+                            current_branch = currentBranch ?? "unknown",
+                            reset_status = resetResult.Status.ToString(),
+                            collections_deleted = resetResult.Deleted
+                        }
+                    };
+                }
+                
+                ToolLoggingUtility.LogToolInfo(_logger, toolName, $"Comprehensive state reset completed successfully. Deleted {resetResult.Deleted} collections.");
+            }
+            
+            ToolLoggingUtility.LogToolInfo(_logger, toolName, "PP13-69-C7 TRACE: About to call ProcessCheckoutAsync from DoltCheckoutTool");
+            var checkoutResult = await _syncManager.ProcessCheckoutAsync(target, create_branch, preserveLocalChanges);
+            ToolLoggingUtility.LogToolInfo(_logger, toolName, "PP13-69-C7 TRACE: ProcessCheckoutAsync returned from DoltCheckoutTool");
 
-            if (!checkoutResult.Success)
+            if (checkoutResult.Status != SyncStatusV2.Completed)
             {
                 ToolLoggingUtility.LogToolError(_logger, toolName, $"Checkout failed: {checkoutResult.ErrorMessage}");
                 
@@ -242,6 +276,9 @@ public class DoltCheckoutTool
             // Get new state
             var toBranch = await _doltCli.GetCurrentBranchAsync();
             var toCommit = await _doltCli.GetHeadCommitHashAsync();
+            
+            // PP13-69 Phase 3: Reconstruct sync state after successful checkout
+            await ReconstructSyncStateAfterCheckout(toBranch);
 
             // Post-checkout validation
             var postCheckoutValidation = new
@@ -347,6 +384,36 @@ public class DoltCheckoutTool
                     operation = "checkout"
                 }
             };
+        }
+    }
+
+    /// <summary>
+    /// PP13-69 Phase 3: Reconstructs sync state in SQLite after successful branch checkout
+    /// </summary>
+    private async Task ReconstructSyncStateAfterCheckout(string targetBranch)
+    {
+        try
+        {
+            ToolLoggingUtility.LogToolInfo(_logger, nameof(DoltCheckoutTool), $"PP13-69 Phase 3: Reconstructing sync state for branch '{targetBranch}'...");
+            
+            // Use the SQLite sync state tracker's reconstruction capability
+            var repoPath = Environment.CurrentDirectory; // Current working directory
+            var reconstructionResult = await _syncStateTracker.ReconstructSyncStateAsync(repoPath, targetBranch);
+            
+            if (reconstructionResult)
+            {
+                ToolLoggingUtility.LogToolInfo(_logger, nameof(DoltCheckoutTool), $"✅ Successfully reconstructed sync state for branch '{targetBranch}'");
+            }
+            else
+            {
+                ToolLoggingUtility.LogToolWarning(_logger, nameof(DoltCheckoutTool), $"⚠️ Sync state reconstruction returned false for branch '{targetBranch}' - continuing anyway");
+            }
+        }
+        catch (Exception ex)
+        {
+            // Don't fail the entire checkout operation due to sync state reconstruction issues
+            ToolLoggingUtility.LogToolWarning(_logger, nameof(DoltCheckoutTool), $"⚠️ Failed to reconstruct sync state for branch '{targetBranch}': {ex.Message}");
+            _logger.LogWarning(ex, "PP13-69 Phase 3: Sync state reconstruction failed, but checkout operation continues");
         }
     }
 }

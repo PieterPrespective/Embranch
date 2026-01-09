@@ -80,6 +80,7 @@ namespace DMMS.Testing.IntegrationTests
                 _doltCli,
                 _chromaService,
                 deletionTracker,
+                deletionTracker,
                 doltConfig,
                 loggerFactory.CreateLogger<SyncManagerV2>()
             );
@@ -100,6 +101,17 @@ namespace DMMS.Testing.IntegrationTests
             {
                 // Ignore cleanup errors
             }
+        }
+
+        /// <summary>
+        /// Helper method to extract documents from QueryDocumentsAsync result
+        /// </summary>
+        private static List<string> ExtractDocuments(object? queryResult)
+        {
+            var docsDict = (Dictionary<string, object>)queryResult!;
+            var docsList = (List<object>)docsDict["documents"];
+            var firstResult = (List<object>)docsList[0];
+            return firstResult.Cast<string>().ToList();
         }
 
         /// <summary>
@@ -315,9 +327,9 @@ namespace DMMS.Testing.IntegrationTests
             Assert.That(localChanges.TotalChanges, Is.GreaterThan(0), 
                 "Should have at least one change");
 
-            // Try to checkout without forcing (should handle based on uncommitted changes)
+            // Try to checkout (PP13-69-C1: no force parameter needed)
             // This tests the if_uncommitted logic
-            var checkoutResult = await _syncManager.ProcessCheckoutAsync("test-feature", false, force: false);
+            var checkoutResult = await _syncManager.ProcessCheckoutAsync("test-feature", false);
             
             // The checkout might fail or succeed based on uncommitted changes handling
             // Log the result for debugging
@@ -417,6 +429,163 @@ namespace DMMS.Testing.IntegrationTests
                 "Should have no false positive changes after rapid switching");
 
             _logger.LogInformation("=== TEST PASSED: Rapid branch switching without corruption ===");
+        }
+
+        /// <summary>
+        /// PP13-68 INTEGRATION TEST: Multi-collection checkout with content validation
+        /// Tests that content-hash verification works correctly across multiple collections during checkout
+        /// This extends the existing multi-collection tests with PP13-68 content validation
+        /// </summary>
+        [Test]
+        public async Task PP13_68_MultiCollectionCheckout_ShouldUpdateAllContentCorrectly()
+        {
+            _logger.LogInformation("=== PP13-68 TEST: Multi-collection checkout with content validation ===");
+
+            // Step 1: Create main branch with multiple collections
+            await _chromaService.CreateCollectionAsync("pp13_68_alpha");
+            await _chromaService.CreateCollectionAsync("pp13_68_beta");
+
+            await _chromaService.AddDocumentsAsync("pp13_68_alpha",
+                new List<string> { "Alpha main content 1", "Alpha main content 2" },
+                new List<string> { "alpha-1", "alpha-2" });
+
+            await _chromaService.AddDocumentsAsync("pp13_68_beta",
+                new List<string> { "Beta main content 1", "Beta main content 2" },
+                new List<string> { "beta-1", "beta-2" });
+
+            await _chromaSyncer.StageLocalChangesAsync("pp13_68_alpha");
+            await _chromaSyncer.StageLocalChangesAsync("pp13_68_beta");
+            await _syncManager.ProcessCommitAsync("PP13-68: Setup main branch collections");
+
+            // Step 2: Create feature branch with different content (same counts)
+            await _doltCli.CheckoutAsync("pp13-68-multi-feature", createNew: true);
+            
+            await _syncManager.FullSyncAsync("pp13_68_alpha");
+            await _syncManager.FullSyncAsync("pp13_68_beta");
+
+            // Modify content while keeping same document counts and IDs (PP13-68 scenario)
+            await _chromaService.DeleteDocumentsAsync("pp13_68_alpha", new List<string> { "alpha-1", "alpha-2" });
+            await _chromaService.AddDocumentsAsync("pp13_68_alpha",
+                new List<string> { "Alpha FEATURE content 1", "Alpha FEATURE content 2" },
+                new List<string> { "alpha-1", "alpha-2" });
+
+            await _chromaService.DeleteDocumentsAsync("pp13_68_beta", new List<string> { "beta-1", "beta-2" });
+            await _chromaService.AddDocumentsAsync("pp13_68_beta",
+                new List<string> { "Beta FEATURE content 1", "Beta FEATURE content 2" },
+                new List<string> { "beta-1", "beta-2" });
+
+            await _chromaSyncer.StageLocalChangesAsync("pp13_68_alpha");
+            await _chromaSyncer.StageLocalChangesAsync("pp13_68_beta");
+            await _syncManager.ProcessCommitAsync("PP13-68: Setup feature branch with different content");
+
+            // Step 3: Test critical checkout - main to feature
+            await _syncManager.ProcessCheckoutAsync("main", false);
+            
+            // Verify we're on main with original content
+            var mainAlphaDocs = await _chromaService.QueryDocumentsAsync("pp13_68_alpha", new List<string> { "content" });
+            var mainBetaDocs = await _chromaService.QueryDocumentsAsync("pp13_68_beta", new List<string> { "content" });
+            
+            var mainAlphaContent = ExtractDocuments(mainAlphaDocs);
+            var mainBetaContent = ExtractDocuments(mainBetaDocs);
+            Assert.That(mainAlphaContent[0], Does.Contain("main"), "Should be on main branch");
+            Assert.That(mainBetaContent[0], Does.Contain("main"), "Should be on main branch");
+
+            // CRITICAL CHECKOUT TEST: main → feature (PP13-68 scenario)
+            _logger.LogInformation("*** EXECUTING PP13-68 CRITICAL MULTI-COLLECTION CHECKOUT ***");
+            var checkoutResult = await _syncManager.ProcessCheckoutAsync("pp13-68-multi-feature", false);
+            
+            Assert.That(checkoutResult.Status, Is.EqualTo(SyncStatusV2.Completed), 
+                "PP13-68: Multi-collection checkout should complete successfully");
+
+            // Step 4: Validate all collections have correct content (PP13-68 content-hash verification)
+            var featureAlphaDocs = await _chromaService.QueryDocumentsAsync("pp13_68_alpha", new List<string> { "content" });
+            var featureBetaDocs = await _chromaService.QueryDocumentsAsync("pp13_68_beta", new List<string> { "content" });
+
+            var featureAlphaContent = ExtractDocuments(featureAlphaDocs);
+            Assert.That(featureAlphaContent[0], Does.Contain("FEATURE"), 
+                "PP13-68: Alpha collection should have feature content after checkout");
+            Assert.That(featureAlphaContent[1], Does.Contain("FEATURE"), 
+                "PP13-68: Alpha collection should have feature content after checkout");
+            
+            var featureBetaContent = ExtractDocuments(featureBetaDocs);
+            Assert.That(featureBetaContent[0], Does.Contain("FEATURE"), 
+                "PP13-68: Beta collection should have feature content after checkout");
+            Assert.That(featureBetaContent[1], Does.Contain("FEATURE"), 
+                "PP13-68: Beta collection should have feature content after checkout");
+
+            // Verify document counts remain the same (this was triggering original bug)
+            var alphaCount = await _chromaService.GetDocumentCountAsync("pp13_68_alpha");
+            var betaCount = await _chromaService.GetDocumentCountAsync("pp13_68_beta");
+            
+            Assert.That(alphaCount, Is.EqualTo(2), "Alpha count should remain 2");
+            Assert.That(betaCount, Is.EqualTo(2), "Beta count should remain 2");
+
+            _logger.LogInformation("=== PP13-68 TEST PASSED: Multi-collection content validation works correctly ===");
+        }
+
+        /// <summary>
+        /// PP13-68 STRESS TEST: Multiple rapid checkouts with content validation
+        /// Tests that the content-hash verification doesn't cause performance issues or race conditions
+        /// </summary>
+        [Test]
+        public async Task PP13_68_RapidCheckoutsWithContentValidation()
+        {
+            _logger.LogInformation("=== PP13-68 STRESS TEST: Rapid checkouts with content validation ===");
+
+            // Setup two branches with different content but same counts
+            await _chromaService.CreateCollectionAsync("pp13_68_stress");
+            
+            await _chromaService.AddDocumentsAsync("pp13_68_stress",
+                new List<string> { "Main stress test content 1", "Main stress test content 2" },
+                new List<string> { "stress-1", "stress-2" });
+
+            await _chromaSyncer.StageLocalChangesAsync("pp13_68_stress");
+            await _syncManager.ProcessCommitAsync("Setup stress test main");
+
+            // Create feature with different content
+            await _doltCli.CheckoutAsync("pp13-68-stress-feature", createNew: true);
+            await _syncManager.FullSyncAsync("pp13_68_stress");
+            
+            await _chromaService.DeleteDocumentsAsync("pp13_68_stress", new List<string> { "stress-1", "stress-2" });
+            await _chromaService.AddDocumentsAsync("pp13_68_stress",
+                new List<string> { "Feature stress test content 1", "Feature stress test content 2" },
+                new List<string> { "stress-1", "stress-2" });
+
+            await _chromaSyncer.StageLocalChangesAsync("pp13_68_stress");
+            await _syncManager.ProcessCommitAsync("Setup stress test feature");
+
+            // Rapid switching test with content validation
+            _logger.LogInformation("Starting PP13-68 rapid checkout stress test (10 iterations)...");
+
+            for (int i = 0; i < 10; i++)
+            {
+                // Switch to main
+                var mainResult = await _syncManager.ProcessCheckoutAsync("main", false);
+                Assert.That(mainResult.Status, Is.EqualTo(SyncStatusV2.Completed), 
+                    $"Iteration {i}: Checkout to main should succeed");
+
+                var mainDocs = await _chromaService.QueryDocumentsAsync("pp13_68_stress", new List<string> { "content" });
+                var mainContent = ExtractDocuments(mainDocs);
+                Assert.That(mainContent[0], Does.Contain("Main stress"), 
+                    $"Iteration {i}: Should have main content after checkout");
+
+                // Switch to feature
+                var featureResult = await _syncManager.ProcessCheckoutAsync("pp13-68-stress-feature", false);
+                Assert.That(featureResult.Status, Is.EqualTo(SyncStatusV2.Completed), 
+                    $"Iteration {i}: Checkout to feature should succeed");
+
+                var featureDocs = await _chromaService.QueryDocumentsAsync("pp13_68_stress", new List<string> { "content" });
+                var featureContent = ExtractDocuments(featureDocs);
+                Assert.That(featureContent[0], Does.Contain("Feature stress"), 
+                    $"Iteration {i}: Should have feature content after checkout");
+
+                if (i % 3 == 0)
+                {
+                    _logger.LogInformation($"PP13-68 stress test iteration {i + 1}/10 completed successfully");
+                }
+            }
+
+            _logger.LogInformation("=== PP13-68 STRESS TEST PASSED: Content-hash verification performs well under rapid switching ===");
         }
     }
 }

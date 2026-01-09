@@ -149,7 +149,7 @@ public class ChromaDbServiceTests
             new() { { "key2", "value2" } }
         };
 
-        _mockService.Setup(s => s.AddDocumentsAsync("test_collection", documents, ids, metadatas, false))
+        _mockService.Setup(s => s.AddDocumentsAsync("test_collection", documents, ids, metadatas, false, true))
             .ReturnsAsync(true);
 
         // Act
@@ -157,7 +157,7 @@ public class ChromaDbServiceTests
 
         // Assert
         Assert.That(result, Is.True);
-        _mockService.Verify(s => s.AddDocumentsAsync("test_collection", documents, ids, metadatas, false), Times.Once);
+        _mockService.Verify(s => s.AddDocumentsAsync("test_collection", documents, ids, metadatas, false, true), Times.Once);
     }
 
     /// <summary>
@@ -219,7 +219,7 @@ public class ChromaDbServiceTests
             metadatas = new List<Dictionary<string, object>>()
         };
 
-        _mockService.Setup(s => s.GetDocumentsAsync("test_collection", ids, null, null))
+        _mockService.Setup(s => s.GetDocumentsAsync("test_collection", ids, null, null, false))
             .ReturnsAsync(expectedResult);
 
         // Act
@@ -240,7 +240,7 @@ public class ChromaDbServiceTests
         var ids = new List<string> { "id1", "id2" };
         var documents = new List<string> { "Updated doc 1", "Updated doc 2" };
 
-        _mockService.Setup(s => s.UpdateDocumentsAsync("test_collection", ids, documents, null))
+        _mockService.Setup(s => s.UpdateDocumentsAsync("test_collection", ids, documents, null, true, true))
             .ReturnsAsync(true);
 
         // Act
@@ -248,7 +248,7 @@ public class ChromaDbServiceTests
 
         // Assert
         Assert.That(result, Is.True);
-        _mockService.Verify(s => s.UpdateDocumentsAsync("test_collection", ids, documents, null), Times.Once);
+        _mockService.Verify(s => s.UpdateDocumentsAsync("test_collection", ids, documents, null, true, true), Times.Once);
     }
 
     /// <summary>
@@ -260,7 +260,7 @@ public class ChromaDbServiceTests
         // Arrange
         var ids = new List<string> { "id1", "id2" };
 
-        _mockService.Setup(s => s.DeleteDocumentsAsync("test_collection", ids))
+        _mockService.Setup(s => s.DeleteDocumentsAsync("test_collection", ids, true))
             .ReturnsAsync(true);
 
         // Act
@@ -268,6 +268,6 @@ public class ChromaDbServiceTests
 
         // Assert
         Assert.That(result, Is.True);
-        _mockService.Verify(s => s.DeleteDocumentsAsync("test_collection", ids), Times.Once);
+        _mockService.Verify(s => s.DeleteDocumentsAsync("test_collection", ids, true), Times.Once);
     }
 }

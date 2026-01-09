@@ -173,8 +173,8 @@ public class ChromaDeleteDocumentsTool
                 ["_deletion_source"] = "mcp_tool"
             }).ToList();
 
-            // Update metadata to mark for deletion sync
-            await _chromaService.UpdateDocumentsAsync(collectionName, ids, metadatas: deleteMetadata);
+            // Update metadata to mark for deletion sync (PP13-68-C2: this is user action, keep markAsLocalChange=true)
+            await _chromaService.UpdateDocumentsAsync(collectionName, ids, metadatas: deleteMetadata, markAsLocalChange: true);
 
             // STEP 4: Actually delete the documents
             ToolLoggingUtility.LogToolInfo(_logger, toolName, "Proceeding with document deletion");

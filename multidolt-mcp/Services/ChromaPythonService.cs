@@ -22,11 +22,12 @@ public class ChromaPythonService : IChromaDbService, IDisposable
     private bool _disposed = false;
     private bool _clientInitialized = false;
     private readonly object _initLock = new object();
+    private readonly IDocumentIdResolver? _idResolver;
 
     /// <summary>
     /// Initializes a new instance of ChromaPythonService
     /// </summary>
-    public ChromaPythonService(ILogger<ChromaPythonService> logger, IOptions<ServerConfiguration> configuration)
+    public ChromaPythonService(ILogger<ChromaPythonService> logger, IOptions<ServerConfiguration> configuration, IDocumentIdResolver? idResolver = null)
     {
         _logger = logger;
         _configuration = configuration.Value;
@@ -43,8 +44,21 @@ public class ChromaPythonService : IChromaDbService, IDisposable
         // Set up the client pool logger
         ChromaClientPool.SetLogger(_logger);
 
+        // Initialize ID resolver (will create internal instance if not provided)
+        _idResolver = idResolver;
+
         // Client initialization is deferred until first use
         _logger.LogInformation("Created ChromaPythonService with client ID: {ClientId}", _clientId);
+    }
+
+    /// <summary>
+    /// Creates a temporary DocumentIdResolver for fallback scenarios
+    /// </summary>
+    private DocumentIdResolver CreateTemporaryResolver()
+    {
+        var loggerFactory = Microsoft.Extensions.Logging.LoggerFactory.Create(builder => { });
+        var tempLogger = loggerFactory.CreateLogger<DocumentIdResolver>();
+        return new DocumentIdResolver(this, tempLogger);
     }
 
     /// <summary>
@@ -311,26 +325,103 @@ public class ChromaPythonService : IChromaDbService, IDisposable
     /// <summary>
     /// Adds documents to a ChromaDB collection
     /// </summary>
-    public async Task<bool> AddDocumentsAsync(string collectionName, List<string> documents, List<string> ids, List<Dictionary<string, object>>? metadatas = null, bool allowDuplicateIds = false)
+    /// <param name="collectionName">Name of the collection</param>
+    /// <param name="documents">List of document content</param>
+    /// <param name="ids">List of document IDs</param>
+    /// <param name="metadatas">Optional metadata for documents</param>
+    /// <param name="allowDuplicateIds">Whether to allow duplicate IDs</param>
+    /// <param name="markAsLocalChange">Whether to mark documents as local changes (default: true for user-initiated additions, false for sync operations from Dolt)</param>
+    public async Task<bool> AddDocumentsAsync(string collectionName, List<string> documents, List<string> ids, List<Dictionary<string, object>>? metadatas = null, bool allowDuplicateIds = false, bool markAsLocalChange = true)
     {
         
         await EnsureClientInitializedAsync();
         
+        // Process documents with chunking
+        var allChunkIds = new List<string>();
+        var allChunkDocuments = new List<string>();
+        var allChunkMetadatas = new List<Dictionary<string, object>>();
+        
+        for (int i = 0; i < documents.Count; i++)
+        {
+            var document = documents[i];
+            var documentId = ids[i];
+            var documentMetadata = metadatas?.ElementAtOrDefault(i) ?? new Dictionary<string, object>();
+            
+            // Check if this is already a chunk ID (prevent double-chunking)
+            if (_idResolver?.IsChunkId(documentId) == true)
+            {
+                _logger.LogInformation($"Document '{documentId}' is already a chunk - adding directly without re-chunking");
+                
+                // Add directly without re-chunking
+                allChunkIds.Add(documentId);
+                allChunkDocuments.Add(document);
+                
+                // Preserve existing metadata, just add the local change flag
+                var directMetadata = new Dictionary<string, object>(documentMetadata)
+                {
+                    ["is_local_change"] = markAsLocalChange
+                };
+                allChunkMetadatas.Add(directMetadata);
+                continue;
+            }
+            
+            // Chunk the document using DocumentConverter
+            var chunks = DocumentConverterUtility.ChunkContent(document, chunkSize: 512, chunkOverlap: 50);
+            
+            _logger.LogInformation($"Document '{documentId}' chunked into {chunks.Count} chunks (original length: {document.Length} chars)");
+            
+            // Optimization: For single chunk documents, use original ID without _chunk_0 suffix
+            if (chunks.Count == 1)
+            {
+                _logger.LogDebug($"Single chunk for document '{documentId}' - using original ID");
+                allChunkIds.Add(documentId);
+                allChunkDocuments.Add(chunks[0]);
+                
+                var singleChunkMetadata = new Dictionary<string, object>(documentMetadata)
+                {
+                    ["source_id"] = documentId,  // Self-reference for single chunks
+                    ["chunk_index"] = 0,
+                    ["total_chunks"] = 1,
+                    ["is_local_change"] = markAsLocalChange
+                };
+                allChunkMetadatas.Add(singleChunkMetadata);
+            }
+            else
+            {
+                // Multiple chunks - use standard chunking with _chunk_# suffix
+                for (int chunkIndex = 0; chunkIndex < chunks.Count; chunkIndex++)
+                {
+                    var chunkId = $"{documentId}_chunk_{chunkIndex}";
+                    allChunkIds.Add(chunkId);
+                    allChunkDocuments.Add(chunks[chunkIndex]);
+                    
+                    var chunkMetadata = new Dictionary<string, object>(documentMetadata)
+                    {
+                        ["source_id"] = documentId,  // Base document ID for expansion
+                        ["chunk_index"] = chunkIndex,
+                        ["total_chunks"] = chunks.Count,
+                        ["is_local_change"] = markAsLocalChange
+                    };
+                    allChunkMetadatas.Add(chunkMetadata);
+                }
+            }
+        }
+        
         // Check for duplicate IDs if not allowed (this can happen outside Python thread)
         if (!allowDuplicateIds)
         {
-            var existingDocs = await GetDocumentsAsync(collectionName, ids, null, 1);
+            var existingDocs = await GetDocumentsAsync(collectionName, allChunkIds, null, 1);
 
-            _logger.LogInformation($"Gotten Existing Documents");
+            _logger.LogInformation($"Checked for existing chunk documents");
 
             if (existingDocs != null && existingDocs is Dictionary<string, object> result)
             {
                 if (result.TryGetValue("ids", out var existingIds) && existingIds is List<object> idList && idList.Count > 0)
                 {
-                    _logger.LogInformation($"Found conflicting ID!");
+                    _logger.LogInformation($"Found conflicting chunk ID!");
 
                     var existingId = idList[0]?.ToString();
-                    throw new InvalidOperationException($"Document with ID '{existingId}' already exists in collection '{collectionName}'");
+                    throw new InvalidOperationException($"Document chunk with ID '{existingId}' already exists in collection '{collectionName}'");
                 }
             }
         }
@@ -350,33 +441,11 @@ public class ChromaPythonService : IChromaDbService, IDisposable
             }
             
             // Convert C# lists to Python lists
-            PyObject pyIds = ConvertListToPyList(ids);
-            PyObject pyDocuments = ConvertListToPyList(documents);
-            PyObject? pyMetadatas = null;
-
-            // Ensure all documents have is_local_change=true metadata for Phase 2 change detection
-            List<Dictionary<string, object>> finalMetadatas;
-            if (metadatas != null && metadatas.Count > 0)
-            {
-                finalMetadatas = metadatas.Select(meta => 
-                {
-                    var newMeta = new Dictionary<string, object>(meta);
-                    newMeta["is_local_change"] = true;
-                    return newMeta;
-                }).ToList();
-            }
-            else
-            {
-                // Create metadata with is_local_change=true for all documents
-                finalMetadatas = ids.Select(_ => new Dictionary<string, object> 
-                { 
-                    ["is_local_change"] = true 
-                }).ToList();
-            }
-
-            pyMetadatas = ConvertMetadatasToPyList(finalMetadatas);
+            PyObject pyIds = ConvertListToPyList(allChunkIds);
+            PyObject pyDocuments = ConvertListToPyList(allChunkDocuments);
+            PyObject pyMetadatas = ConvertMetadatasToPyList(allChunkMetadatas);
             
-            // Add documents to collection (always with metadata now for change detection)
+            // Add chunks to collection
             try
             {
                 collection.add(
@@ -387,11 +456,11 @@ public class ChromaPythonService : IChromaDbService, IDisposable
             }
             catch (PythonException ex)
             {
-                _logger.LogError($"Failed to add documents to collection '{collectionName}': {ex.Message}");
+                _logger.LogError($"Failed to add document chunks to collection '{collectionName}': {ex.Message}");
                 return false;
             }
 
-            _logger.LogInformation($"Added {documents.Count} documents to collection '{collectionName}'");
+            _logger.LogInformation($"Added {documents.Count} documents as {allChunkIds.Count} chunks to collection '{collectionName}'");
             return true;
         }, timeoutMs: 60000, operationName: $"AddDocuments_{collectionName}");
         
@@ -478,8 +547,13 @@ public class ChromaPythonService : IChromaDbService, IDisposable
     /// <summary>
     /// Gets documents from a ChromaDB collection
     /// </summary>
+    /// <param name="collectionName">Name of the collection</param>
+    /// <param name="ids">Optional list of document IDs to retrieve</param>
+    /// <param name="where">Optional metadata filter</param>
+    /// <param name="limit">Optional limit on number of documents to return</param>
+    /// <param name="inclEmbeddings">Whether to include embeddings in the response (default: false for backward compatibility)</param>
     public async Task<object?> GetDocumentsAsync(string collectionName, List<string>? ids = null,
-        Dictionary<string, object>? where = null, int? limit = null)
+        Dictionary<string, object>? where = null, int? limit = null, bool inclEmbeddings = false)
     {
         await EnsureClientInitializedAsync();
 
@@ -489,44 +563,52 @@ public class ChromaPythonService : IChromaDbService, IDisposable
             {
                 dynamic client = ChromaClientPool.GetClient(_clientId);
                 dynamic collection = client.get_collection(name: collectionName);
-                
+
                 PyObject? pyIds = ids != null && ids.Count > 0 ? ConvertListToPyList(ids) : null;
                 PyObject? pyWhere = where != null ? ConvertDictionaryToPyDict(where) : null;
+
+                // Build include list based on inclEmbeddings parameter
+                var includeItems = new List<string> { "documents", "metadatas" };
+                if (inclEmbeddings)
+                {
+                    includeItems.Add("embeddings");
+                }
+                PyObject pyInclude = ConvertListToPyList(includeItems);
 
                 dynamic results;
                 if (pyIds != null && pyWhere != null && limit.HasValue)
                 {
-                    results = collection.get(ids: pyIds, where: pyWhere, limit: limit.Value);
+                    results = collection.get(ids: pyIds, where: pyWhere, limit: limit.Value, include: pyInclude);
                 }
                 else if (pyIds != null && pyWhere != null)
                 {
-                    results = collection.get(ids: pyIds, where: pyWhere);
+                    results = collection.get(ids: pyIds, where: pyWhere, include: pyInclude);
                 }
                 else if (pyIds != null && limit.HasValue)
                 {
-                    results = collection.get(ids: pyIds, limit: limit.Value);
+                    results = collection.get(ids: pyIds, limit: limit.Value, include: pyInclude);
                 }
                 else if (pyWhere != null && limit.HasValue)
                 {
-                    results = collection.get(where: pyWhere, limit: limit.Value);
+                    results = collection.get(where: pyWhere, limit: limit.Value, include: pyInclude);
                 }
                 else if (pyIds != null)
                 {
-                    results = collection.get(ids: pyIds);
+                    results = collection.get(ids: pyIds, include: pyInclude);
                 }
                 else if (pyWhere != null)
                 {
-                    results = collection.get(where: pyWhere);
+                    results = collection.get(where: pyWhere, include: pyInclude);
                 }
                 else if (limit.HasValue)
                 {
-                    results = collection.get(limit: limit.Value);
+                    results = collection.get(limit: limit.Value, include: pyInclude);
                 }
                 else
                 {
-                    results = collection.get();
+                    results = collection.get(include: pyInclude);
                 }
-                
+
                 // Convert results to C# objects
                 var result = new Dictionary<string, object>
                 {
@@ -535,32 +617,116 @@ public class ChromaPythonService : IChromaDbService, IDisposable
                     ["metadatas"] = results["metadatas"] != null ? ConvertPyListToMetadatasList(results["metadatas"]) : new List<object>()
                 };
 
+                // Include embeddings if requested
+                if (inclEmbeddings && results["embeddings"] != null)
+                {
+                    result["embeddings"] = ConvertPyEmbeddingsToList(results["embeddings"]);
+                }
+
                 return (object?)result;
             }
             catch (PythonException ex)
             {
                 _logger.LogError($"Failed to get documents from collection '{collectionName}' - Python error: {ex.Message}");
-                return new Dictionary<string, object>
+                var errorResult = new Dictionary<string, object>
                 {
                     ["ids"] = new List<object>(),
                     ["documents"] = new List<object>(),
                     ["metadatas"] = new List<object>()
                 };
+                if (inclEmbeddings)
+                {
+                    errorResult["embeddings"] = new List<object>();
+                }
+                return errorResult;
             }
         }, timeoutMs: 60000, operationName: $"GetDocuments_{collectionName}");
     }
 
     /// <summary>
-    /// Updates documents in a ChromaDB collection
+    /// Updates documents in a ChromaDB collection with optional chunk expansion
     /// </summary>
+    /// <param name="collectionName">Name of the collection</param>
+    /// <param name="ids">List of document IDs to update</param>
+    /// <param name="documents">Optional new document content</param>
+    /// <param name="metadatas">Optional new metadata for documents</param>
+    /// <param name="markAsLocalChange">Whether to mark documents as local changes (default: true for user-initiated updates, false for sync operations)</param>
+    /// <param name="expandChunks">Whether to expand base document IDs to all their chunks (default: true)</param>
     public async Task<bool> UpdateDocumentsAsync(string collectionName, List<string> ids,
-        List<string>? documents = null, List<Dictionary<string, object>>? metadatas = null)
+        List<string>? documents = null, List<Dictionary<string, object>>? metadatas = null, bool markAsLocalChange = true, bool expandChunks = true)
     {
         await EnsureClientInitializedAsync();
         
         if (documents == null && metadatas == null)
         {
             throw new ArgumentException("At least one of documents or metadatas must be provided");
+        }
+
+        // Handle document content updates with chunk expansion
+        if (documents != null && expandChunks)
+        {
+            // When updating document content with base IDs, we need to:
+            // 1. Delete all existing chunks for these documents
+            // 2. Re-add documents with new content using proper chunking
+            // This ensures proper rechunking when document length changes
+            
+            var resolver = _idResolver ?? CreateTemporaryResolver();
+            var baseIds = resolver.ExtractUniqueBaseDocumentIds(ids);
+            
+            // If we're dealing with base IDs and updating content, handle rechunking
+            if (baseIds.Count > 0 && !ids.Any(id => resolver.IsChunkId(id)))
+            {
+                _logger.LogInformation($"Performing document update with rechunking for {baseIds.Count} documents");
+                
+                // Delete all existing chunks for these documents
+                var chunkIdsToDelete = await resolver.ExpandMultipleToChunkIdsAsync(collectionName, baseIds);
+                if (chunkIdsToDelete.Count > 0)
+                {
+                    await DeleteDocumentsAsync(collectionName, chunkIdsToDelete, expandChunks: false);
+                }
+                
+                // Re-add documents with new content and proper chunking
+                _logger.LogInformation($"Re-adding {baseIds.Count} documents with updated content");
+                
+                // Create metadata for re-addition
+                List<Dictionary<string, object>>? reAddMetadatas = null;
+                if (metadatas != null && metadatas.Count > 0)
+                {
+                    reAddMetadatas = new List<Dictionary<string, object>>();
+                    for (int i = 0; i < baseIds.Count; i++)
+                    {
+                        var metadataIndex = Math.Min(i, metadatas.Count - 1);
+                        var metadata = new Dictionary<string, object>(metadatas[metadataIndex]);
+                        metadata["is_local_change"] = markAsLocalChange;
+                        reAddMetadatas.Add(metadata);
+                    }
+                }
+                
+                // Re-add using AddDocumentsAsync which handles chunking properly
+                var reAddResult = await AddDocumentsAsync(collectionName, documents, baseIds, 
+                    reAddMetadatas, allowDuplicateIds: true, markAsLocalChange: markAsLocalChange);
+                
+                if (!reAddResult)
+                {
+                    _logger.LogError($"Failed to re-add documents after deletion during update");
+                    return false;
+                }
+                
+                _logger.LogInformation($"Successfully updated {baseIds.Count} documents with rechunking");
+                return true; // Complete - no need to continue with normal update path
+            }
+        }
+
+        // Expand IDs for metadata-only updates or when not rechunking
+        List<string> actualIdsToUpdate = ids;
+        if (expandChunks && documents == null) // Metadata-only update
+        {
+            var resolver = _idResolver ?? CreateTemporaryResolver();
+            actualIdsToUpdate = await resolver.ExpandMultipleToChunkIdsAsync(collectionName, ids);
+            if (actualIdsToUpdate.Count > ids.Count)
+            {
+                _logger.LogInformation($"Expanded {ids.Count} document IDs to {actualIdsToUpdate.Count} chunk IDs for metadata update");
+            }
         }
         
         return await PythonContext.ExecuteAsync(() =>
@@ -570,24 +736,57 @@ public class ChromaPythonService : IChromaDbService, IDisposable
                 dynamic client = ChromaClientPool.GetClient(_clientId);
                 dynamic collection = client.get_collection(name: collectionName);
                 
-                PyObject pyIds = ConvertListToPyList(ids);
+                PyObject pyIds = ConvertListToPyList(actualIdsToUpdate);
                 PyObject? pyDocuments = documents != null ? ConvertListToPyList(documents) : null;
-                PyObject? pyMetadatas = metadatas != null ? ConvertMetadatasToPyList(metadatas) : null;
+                
+                // Handle metadata with proper is_local_change flag (PP13-68-C2 fix)
+                List<Dictionary<string, object>> finalMetadatas;
+                if (metadatas != null && metadatas.Count > 0)
+                {
+                    // If we expanded chunks, we need to replicate metadata for each chunk
+                    if (actualIdsToUpdate.Count > metadatas.Count)
+                    {
+                        // Replicate the first metadata for all chunks (assumes single document update)
+                        var baseMeta = metadatas[0];
+                        finalMetadatas = actualIdsToUpdate.Select(id =>
+                        {
+                            var newMeta = new Dictionary<string, object>(baseMeta);
+                            newMeta["is_local_change"] = markAsLocalChange;
+                            return newMeta;
+                        }).ToList();
+                    }
+                    else
+                    {
+                        finalMetadatas = metadatas.Select(meta =>
+                        {
+                            var newMeta = new Dictionary<string, object>(meta);
+                            newMeta["is_local_change"] = markAsLocalChange;
+                            return newMeta;
+                        }).ToList();
+                    }
+                }
+                else
+                {
+                    // Create metadata with appropriate is_local_change flag for all IDs
+                    finalMetadatas = actualIdsToUpdate.Select(_ => new Dictionary<string, object>
+                    {
+                        ["is_local_change"] = markAsLocalChange
+                    }).ToList();
+                }
+                
+                PyObject pyMetadatas = ConvertMetadatasToPyList(finalMetadatas);
 
-                if (pyDocuments != null && pyMetadatas != null)
+                // Always update with metadata (for is_local_change flag management)
+                if (pyDocuments != null)
                 {
                     collection.update(ids: pyIds, documents: pyDocuments, metadatas: pyMetadatas);
                 }
-                else if (pyDocuments != null)
-                {
-                    collection.update(ids: pyIds, documents: pyDocuments);
-                }
-                else if (pyMetadatas != null)
+                else
                 {
                     collection.update(ids: pyIds, metadatas: pyMetadatas);
                 }
 
-                _logger.LogInformation($"Updated {ids.Count} documents in collection '{collectionName}'");
+                _logger.LogInformation($"Updated {actualIdsToUpdate.Count} documents/chunks in collection '{collectionName}'");
                 return true;
             }
             catch (PythonException ex)
@@ -599,22 +798,56 @@ public class ChromaPythonService : IChromaDbService, IDisposable
     }
 
     /// <summary>
-    /// Deletes documents from a ChromaDB collection
+    /// Deletes documents from a ChromaDB collection with optional chunk expansion
     /// </summary>
-    public async Task<bool> DeleteDocumentsAsync(string collectionName, List<string> ids)
+    /// <param name="collectionName">Name of the collection</param>
+    /// <param name="ids">List of document IDs to delete</param>
+    /// <param name="expandChunks">Whether to expand base document IDs to all their chunks (default: true)</param>
+    public async Task<bool> DeleteDocumentsAsync(string collectionName, List<string> ids, bool expandChunks = true)
     {
         await EnsureClientInitializedAsync();
         
+        // Expand base IDs to chunk IDs if requested and resolver is available
+        List<string> actualIdsToDelete = ids;
+        if (expandChunks && _idResolver != null)
+        {
+            actualIdsToDelete = await _idResolver.ExpandMultipleToChunkIdsAsync(collectionName, ids);
+            if (actualIdsToDelete.Count > ids.Count)
+            {
+                _logger.LogInformation($"Expanded {ids.Count} document IDs to {actualIdsToDelete.Count} chunk IDs for deletion");
+            }
+        }
+        else if (expandChunks && _idResolver == null)
+        {
+            // Create a temporary resolver for this operation
+            // Using a logger factory to create the correct logger type
+            var loggerFactory = Microsoft.Extensions.Logging.LoggerFactory.Create(builder => { });
+            var tempLogger = loggerFactory.CreateLogger<DocumentIdResolver>();
+            var tempResolver = new DocumentIdResolver(this, tempLogger);
+            actualIdsToDelete = await tempResolver.ExpandMultipleToChunkIdsAsync(collectionName, ids);
+            if (actualIdsToDelete.Count > ids.Count)
+            {
+                _logger.LogInformation($"Expanded {ids.Count} document IDs to {actualIdsToDelete.Count} chunk IDs for deletion");
+            }
+        }
+        
+        // Handle case where no documents exist to delete (this is not an error)
+        if (actualIdsToDelete.Count == 0)
+        {
+            _logger.LogInformation($"No documents found to delete in collection '{collectionName}' - operation succeeded");
+            return true;
+        }
+
         return await PythonContext.ExecuteAsync(() =>
         {
             try
             {
                 dynamic client = ChromaClientPool.GetClient(_clientId);
                 dynamic collection = client.get_collection(name: collectionName);
-                PyObject pyIds = ConvertListToPyList(ids);
+                PyObject pyIds = ConvertListToPyList(actualIdsToDelete);
                 collection.delete(ids: pyIds);
                 
-                _logger.LogInformation($"Deleted {ids.Count} documents from collection '{collectionName}'");
+                _logger.LogInformation($"Deleted {actualIdsToDelete.Count} documents/chunks from collection '{collectionName}'");
                 return true;
             }
             catch (PythonException ex)
@@ -853,6 +1086,91 @@ public class ChromaPythonService : IChromaDbService, IDisposable
                 result.Add(item?.ToString() ?? string.Empty);
             }
         }
+        return result;
+    }
+
+    /// <summary>
+    /// Converts Python embeddings (list of numpy arrays or lists) to C# List of List of float.
+    /// ChromaDB returns embeddings as a list of numpy arrays, each representing an embedding vector.
+    /// </summary>
+    private List<List<float>> ConvertPyEmbeddingsToList(dynamic pyEmbeddings)
+    {
+        var result = new List<List<float>>();
+        if (pyEmbeddings == null) return result;
+
+        try
+        {
+            foreach (var embedding in pyEmbeddings)
+            {
+                var embeddingVector = new List<float>();
+                if (embedding == null)
+                {
+                    result.Add(embeddingVector);
+                    continue;
+                }
+
+                // Handle numpy arrays and Python lists
+                // First convert to Python list if it's a numpy array
+                dynamic embeddingList;
+                if (embedding is PyObject pyObj)
+                {
+                    var pyType = pyObj.GetPythonType();
+                    if (pyType.Name.Equals("ndarray"))
+                    {
+                        // Convert numpy array to Python list using tolist()
+                        embeddingList = embedding.tolist();
+                    }
+                    else
+                    {
+                        embeddingList = embedding;
+                    }
+                }
+                else
+                {
+                    embeddingList = embedding;
+                }
+
+                // Iterate through the embedding values
+                foreach (var value in embeddingList)
+                {
+                    try
+                    {
+                        if (value is PyObject pyVal)
+                        {
+                            // Try to convert to float
+                            float floatVal = (float)Convert.ToDouble(pyVal.ToString());
+                            embeddingVector.Add(floatVal);
+                        }
+                        else if (value is double dVal)
+                        {
+                            embeddingVector.Add((float)dVal);
+                        }
+                        else if (value is float fVal)
+                        {
+                            embeddingVector.Add(fVal);
+                        }
+                        else
+                        {
+                            // Fallback: parse as string
+                            float floatVal = float.Parse(value?.ToString() ?? "0");
+                            embeddingVector.Add(floatVal);
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger?.LogWarning($"Failed to convert embedding value: {ex.Message}. Using 0.0 as fallback.");
+                        embeddingVector.Add(0.0f);
+                    }
+                }
+                result.Add(embeddingVector);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogError($"Failed to convert embeddings: {ex.Message}. Returning empty list.");
+            return new List<List<float>>();
+        }
+
         return result;
     }
 

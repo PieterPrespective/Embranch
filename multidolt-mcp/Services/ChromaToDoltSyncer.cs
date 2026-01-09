@@ -354,8 +354,8 @@ namespace DMMS.Services
                         var metadata = metadatas[0] as Dictionary<string, object> ?? new Dictionary<string, object>();
                         metadata["is_local_change"] = false;
                         
-                        // Update the document's metadata in ChromaDB
-                        await _chroma.UpdateDocumentsAsync(collectionName, new List<string> { docId }, metadatas: new List<Dictionary<string, object>> { metadata });
+                        // Update the document's metadata in ChromaDB with markAsLocalChange: false (PP13-68-C2 fix)
+                        await _chroma.UpdateDocumentsAsync(collectionName, new List<string> { docId }, metadatas: new List<Dictionary<string, object>> { metadata }, markAsLocalChange: false);
                         
                         _logger?.LogDebug("Successfully cleared is_local_change flag for document {DocId}", docId);
                     }

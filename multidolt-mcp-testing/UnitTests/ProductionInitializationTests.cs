@@ -186,7 +186,8 @@ namespace DMMS.UnitTests
             var mockDoltCli = new Mock<IDoltCli>();
             var mockDeletionTracker = new Mock<IDeletionTracker>();
             var mockCollectionDetector = new Mock<ICollectionChangeDetector>();
-            
+            var mockSyncStateTracker = new Mock<ISyncStateTracker>();
+
             mockDeletionTracker.Setup(x => x.InitializeAsync(It.IsAny<string>()))
                 .Returns(Task.CompletedTask);
             mockCollectionDetector.Setup(x => x.InitializeAsync(It.IsAny<string>()))
@@ -195,11 +196,14 @@ namespace DMMS.UnitTests
                 .Returns(Task.CompletedTask);
             mockCollectionDetector.Setup(x => x.ValidateInitializationAsync())
                 .Returns(Task.CompletedTask);
-            
+            mockSyncStateTracker.Setup(x => x.InitializeAsync(It.IsAny<string>()))
+                .Returns(Task.CompletedTask);
+
             _services.AddSingleton(mockChromaService.Object);
             _services.AddSingleton(mockDoltCli.Object);
             _services.AddSingleton(mockDeletionTracker.Object);
             _services.AddSingleton(mockCollectionDetector.Object);
+            _services.AddSingleton(mockSyncStateTracker.Object);
             _services.AddSingleton<ISyncManagerV2, SyncManagerV2>();
             _services.AddLogging();
 
@@ -210,6 +214,7 @@ namespace DMMS.UnitTests
             var doltCli = serviceProvider.GetRequiredService<IDoltCli>();
             var deletionTracker = serviceProvider.GetRequiredService<IDeletionTracker>();
             var collectionDetector = serviceProvider.GetRequiredService<ICollectionChangeDetector>();
+            var syncStateTracker = serviceProvider.GetRequiredService<ISyncStateTracker>();
             var syncManager = serviceProvider.GetRequiredService<ISyncManagerV2>();
 
             // Assert
@@ -217,6 +222,7 @@ namespace DMMS.UnitTests
             Assert.That(doltCli, Is.Not.Null, "Dolt CLI service should be resolvable");
             Assert.That(deletionTracker, Is.Not.Null, "Deletion tracker should be resolvable");
             Assert.That(collectionDetector, Is.Not.Null, "Collection detector should be resolvable");
+            Assert.That(syncStateTracker, Is.Not.Null, "Sync state tracker should be resolvable");
             Assert.That(syncManager, Is.Not.Null, "Sync manager should be resolvable");
         }
 

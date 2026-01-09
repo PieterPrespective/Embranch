@@ -811,6 +811,117 @@ namespace DMMS.Services
             return new List<string>();
         }
 
+        /// <summary>
+        /// Clean up sync metadata for documents in a collection after successful commit (PP13-68)
+        /// </summary>
+        /// <param name="collectionName">Name of the collection to clean up</param>
+        /// <returns>Number of documents cleaned up</returns>
+        public async Task<int> CleanupSyncMetadataAsync(string collectionName)
+        {
+            _logger?.LogInformation("Cleaning up sync metadata for collection {Collection}", collectionName);
+            
+            try
+            {
+                var currentCommitHash = await _dolt.GetHeadCommitHashAsync();
+                
+                // Get all documents with local change flags
+                var flaggedDocs = await GetFlaggedLocalChangesAsync(collectionName);
+                var cleanedCount = 0;
+                
+                foreach (var doc in flaggedDocs)
+                {
+                    try
+                    {
+                        // Clear the is_local_change flag and update dolt_commit metadata
+                        var updateMetadata = new Dictionary<string, object>
+                        {
+                            ["is_local_change"] = false,
+                            ["dolt_commit"] = currentCommitHash
+                        };
+                        
+                        await _chroma.UpdateDocumentsAsync(collectionName, 
+                            new List<string> { doc.DocId }, 
+                            metadatas: new List<Dictionary<string, object>> { updateMetadata },
+                            markAsLocalChange: false);
+                        
+                        cleanedCount++;
+                        _logger?.LogDebug("Cleaned metadata for document {DocId} in collection {Collection}", 
+                            doc.DocId, collectionName);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger?.LogWarning(ex, "Failed to clean metadata for document {DocId} in collection {Collection}", 
+                            doc.DocId, collectionName);
+                    }
+                }
+                
+                _logger?.LogInformation("Cleaned up metadata for {Count} documents in collection {Collection}", 
+                    cleanedCount, collectionName);
+                return cleanedCount;
+            }
+            catch (Exception ex)
+            {
+                _logger?.LogError(ex, "Failed to cleanup sync metadata for collection {Collection}", collectionName);
+                throw new Exception($"Failed to cleanup sync metadata: {ex.Message}", ex);
+            }
+        }
+        
+        /// <summary>
+        /// Validate post-operation state to ensure metadata consistency (PP13-68)
+        /// </summary>
+        /// <param name="collectionName">Name of the collection to validate</param>
+        /// <param name="expectedCommitHash">Expected commit hash for documents</param>
+        /// <returns>True if metadata is consistent, false if issues are detected</returns>
+        public async Task<bool> ValidatePostOperationStateAsync(string collectionName, string? expectedCommitHash = null)
+        {
+            _logger?.LogDebug("Validating post-operation state for collection {Collection}", collectionName);
+            
+            try
+            {
+                var currentCommitHash = expectedCommitHash ?? await _dolt.GetHeadCommitHashAsync();
+                var issues = 0;
+                
+                // Check for persistent local change flags
+                var flaggedDocs = await GetFlaggedLocalChangesAsync(collectionName);
+                if (flaggedDocs.Any())
+                {
+                    _logger?.LogWarning("Found {Count} documents with persistent is_local_change=true flags in collection {Collection}", 
+                        flaggedDocs.Count, collectionName);
+                    issues += flaggedDocs.Count;
+                }
+                
+                // Check for incorrect dolt_commit metadata
+                var allDocs = await GetAllChromaDocumentsAsync(collectionName);
+                var staleCommitDocs = allDocs.Where(d => d.Metadata.TryGetValue("dolt_commit", out var commit) 
+                    && commit?.ToString() != currentCommitHash).ToList();
+                
+                if (staleCommitDocs.Any())
+                {
+                    _logger?.LogWarning("Found {Count} documents with stale dolt_commit metadata in collection {Collection}", 
+                        staleCommitDocs.Count, collectionName);
+                    issues += staleCommitDocs.Count;
+                }
+                
+                var isConsistent = issues == 0;
+                if (isConsistent)
+                {
+                    _logger?.LogDebug("Post-operation state validation PASSED for collection {Collection}", collectionName);
+                }
+                else
+                {
+                    _logger?.LogWarning("Post-operation state validation FAILED for collection {Collection} - {Issues} metadata issues detected", 
+                        collectionName, issues);
+                }
+                
+                return isConsistent;
+            }
+            catch (Exception ex)
+            {
+                _logger?.LogError(ex, "Failed to validate post-operation state for collection {Collection}", collectionName);
+                return false;
+            }
+        }
+
         #endregion
     }
 }

@@ -18,6 +18,7 @@ public class CollectionSyncIntegrationTests
     private string _tempDir = null!;
     private ServiceProvider _serviceProvider = null!;
     private IDeletionTracker _deletionTracker = null!;
+    private ISyncStateTracker _syncStateTracker = null!;
     private ICollectionChangeDetector _collectionChangeDetector = null!;
     private IChromaDbService _chromaService = null!;
     private ISyncManagerV2 _syncManager = null!;
@@ -40,20 +41,40 @@ public class CollectionSyncIntegrationTests
     }
 
     [TearDown]
-    public void TearDown()
+    public async Task TearDown()
     {
-        _serviceProvider?.Dispose();
-        
-        if (Directory.Exists(_tempDir))
+        try
         {
-            try
+            // Clean up SQLite data properly instead of deleting files
+            if (_syncStateTracker != null && !string.IsNullOrEmpty(_tempDir))
+            {
+                // Clear branch-specific sync states for the test repository
+                await _syncStateTracker.ClearBranchSyncStatesAsync(_tempDir, "main");
+            }
+            
+            if (_deletionTracker != null && !string.IsNullOrEmpty(_tempDir))
+            {
+                // Clean up collection tracking data
+                await _deletionTracker.CleanupCommittedDeletionsAsync(_tempDir);
+                await _deletionTracker.CleanupCommittedCollectionDeletionsAsync(_tempDir);
+                await _deletionTracker.CleanupStaleTrackingAsync(_tempDir);
+            }
+            
+            _serviceProvider?.Dispose();
+            
+            // Allow a brief moment for cleanup to complete
+            await Task.Delay(50);
+            
+            // Only attempt directory deletion if SQLite cleanup succeeded
+            if (Directory.Exists(_tempDir))
             {
                 Directory.Delete(_tempDir, true);
             }
-            catch
-            {
-                // Best effort cleanup
-            }
+        }
+        catch (Exception ex)
+        {
+            // Log but don't fail tests due to cleanup issues
+            TestContext.WriteLine($"Cleanup warning: {ex.Message}");
         }
     }
 
@@ -91,6 +112,7 @@ public class CollectionSyncIntegrationTests
         _serviceProvider = CreateServiceProvider();
         
         _deletionTracker = _serviceProvider.GetRequiredService<IDeletionTracker>();
+        _syncStateTracker = _serviceProvider.GetRequiredService<ISyncStateTracker>();
         _collectionChangeDetector = _serviceProvider.GetRequiredService<ICollectionChangeDetector>();
         _chromaService = _serviceProvider.GetRequiredService<IChromaDbService>();
         _syncManager = _serviceProvider.GetRequiredService<ISyncManagerV2>();
@@ -101,6 +123,7 @@ public class CollectionSyncIntegrationTests
 
         // Initialize services after Dolt is ready
         await _deletionTracker.InitializeAsync(_tempDir);
+        await _syncStateTracker.InitializeAsync(_tempDir);
         await _collectionChangeDetector.InitializeAsync(_tempDir);
         
         // Create basic Dolt schema
@@ -155,6 +178,7 @@ public class CollectionSyncIntegrationTests
         
         // Register services
         services.AddSingleton<IDeletionTracker, SqliteDeletionTracker>();
+        services.AddSingleton<ISyncStateTracker>(sp => sp.GetRequiredService<IDeletionTracker>() as ISyncStateTracker);
         services.AddSingleton<ICollectionChangeDetector, CollectionChangeDetector>();
         services.AddSingleton<ISyncManagerV2, SyncManagerV2>();
         

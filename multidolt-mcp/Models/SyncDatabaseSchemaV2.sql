@@ -64,23 +64,9 @@ CREATE TABLE IF NOT EXISTS documents (
 -- SYNC STATE TRACKING TABLES (Updated)
 -- ============================================
 
--- ChromaDB sync state per collection
-CREATE TABLE IF NOT EXISTS chroma_sync_state (
-    collection_name VARCHAR(255) PRIMARY KEY,
-    last_sync_commit VARCHAR(40),
-    last_sync_at DATETIME,
-    document_count INT DEFAULT 0,
-    chunk_count INT DEFAULT 0,
-    embedding_model VARCHAR(100),
-    sync_status ENUM('synced', 'pending', 'error', 'in_progress', 'local_changes') DEFAULT 'pending',
-    local_changes_count INT DEFAULT 0,     -- NEW: Track uncommitted local changes
-    error_message TEXT,
-    metadata JSON,
-    
-    FOREIGN KEY (collection_name) REFERENCES collections(collection_name) ON DELETE CASCADE,
-    INDEX idx_sync_status (sync_status),
-    INDEX idx_last_sync_at (last_sync_at)
-);
+-- PP13-69: chroma_sync_state table removed from Dolt schema
+-- Sync state now stored in SQLite to avoid versioning conflicts during branch operations
+-- See SqliteDeletionTracker.CreateDatabaseSchemaAsync() for the new sync_state table
 
 -- Document sync log - tracks individual document sync operations
 CREATE TABLE IF NOT EXISTS document_sync_log (
@@ -168,18 +154,14 @@ FROM local_changes lc
 LEFT JOIN documents d ON lc.doc_id = d.doc_id AND lc.collection_name = d.collection_name
 ORDER BY lc.detected_at DESC;
 
--- View for sync status summary
+-- View for sync status summary (PP13-69: simplified without chroma_sync_state)
 CREATE OR REPLACE VIEW sync_status_summary AS
 SELECT 
     c.collection_name,
     c.display_name,
     c.document_count,
-    css.last_sync_at,
-    css.sync_status,
-    css.local_changes_count,
-    (SELECT COUNT(*) FROM local_changes WHERE collection_name = c.collection_name) as actual_local_changes
-FROM collections c
-LEFT JOIN chroma_sync_state css ON c.collection_name = css.collection_name;
+    (SELECT COUNT(*) FROM local_changes WHERE collection_name = c.collection_name) as local_changes_count
+FROM collections c;
 
 -- ============================================
 -- MIGRATION HELPERS

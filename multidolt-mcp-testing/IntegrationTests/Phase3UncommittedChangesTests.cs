@@ -81,6 +81,7 @@ namespace DMMS.Testing.IntegrationTests
                 _doltCli, 
                 _chromaService,
                 deletionTracker,
+                deletionTracker,
                 doltConfig,
                 loggerFactory.CreateLogger<SyncManagerV2>()
             );
@@ -88,7 +89,8 @@ namespace DMMS.Testing.IntegrationTests
             _checkoutTool = new DoltCheckoutTool(
                 loggerFactory.CreateLogger<DoltCheckoutTool>(),
                 _doltCli,
-                _syncManager
+                _syncManager,
+                deletionTracker  // ISyncStateTracker (PP13-69 Phase 3)
             );
         }
 
@@ -132,7 +134,7 @@ namespace DMMS.Testing.IntegrationTests
             // Verify checkout was blocked
             dynamic resultObj = result;
             Assert.That(resultObj.success, Is.False);
-            Assert.That(resultObj.error, Is.EqualTo("UNCOMMITTED_CHANGES"));
+            Assert.That(resultObj.error, Is.EqualTo("UNCOMMITTED_local changes"));
             
             // Verify we're still on main branch
             var currentBranch = await _doltCli.GetCurrentBranchAsync();
