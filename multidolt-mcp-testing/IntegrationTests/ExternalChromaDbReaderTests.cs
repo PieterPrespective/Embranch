@@ -1,6 +1,7 @@
 using NUnit.Framework;
 using Microsoft.Extensions.Logging;
 using DMMS.Services;
+using Python.Runtime;
 
 namespace DMMSTesting.IntegrationTests
 {
@@ -19,7 +20,6 @@ namespace DMMSTesting.IntegrationTests
 
         private string _tempDataPath = null!;
         private string _externalDbPath = null!;
-        private string _externalClientId = string.Empty;
 
         private const string TestCollection1 = "reader_test_collection_1";
         private const string TestCollection2 = "reader_test_collection_2";
@@ -526,8 +526,11 @@ namespace DMMSTesting.IntegrationTests
 
         #region Helper Methods
 
+        private string _externalClientId = string.Empty;
+
         /// <summary>
-        /// Creates an empty external ChromaDB database
+        /// Creates an empty external ChromaDB database.
+        /// Uses unique client ID pattern matching ImportAnalyzerTests.
         /// </summary>
         private async Task CreateEmptyExternalDatabase()
         {
@@ -536,11 +539,12 @@ namespace DMMSTesting.IntegrationTests
                 _externalClientId = $"TestExternalDb_{Guid.NewGuid():N}";
                 dynamic client = ChromaClientPool.GetOrCreateClient(_externalClientId, $"persistent:{_externalDbPath}");
                 return true;
-            }, timeoutMs: 30000, operationName: "CreateEmptyExternalDb");
+            }, timeoutMs: 30000, operationName: "CreateExternalDb");
         }
 
         /// <summary>
-        /// Creates external database with specified documents
+        /// Creates external database with specified documents.
+        /// Uses unique client ID and proper Python list conversion.
         /// </summary>
         private async Task CreateExternalDatabaseWithDocuments(
             (string collection, string docId, string content)[] documents)
@@ -556,21 +560,30 @@ namespace DMMSTesting.IntegrationTests
                 foreach (var group in byCollection)
                 {
                     dynamic collection = client.get_or_create_collection(name: group.Key);
-                    var idsList = group.Select(d => d.docId).ToList();
-                    var contentsList = group.Select(d => d.content).ToList();
 
-                    // Add documents one at a time to avoid Python list conversion issues
-                    for (int i = 0; i < idsList.Count; i++)
-                    {
-                        collection.add(
-                            ids: new[] { idsList[i] },
-                            documents: new[] { contentsList[i] }
-                        );
-                    }
+                    // Convert to proper Python lists like ChromaPythonService does
+                    PyObject pyIds = ConvertToPyList(group.Select(d => d.docId).ToList());
+                    PyObject pyDocs = ConvertToPyList(group.Select(d => d.content).ToList());
+
+                    collection.add(ids: pyIds, documents: pyDocs);
                 }
 
                 return true;
             }, timeoutMs: 60000, operationName: "CreateExternalDbWithDocs");
+        }
+
+        /// <summary>
+        /// Converts a C# string list to a Python list.
+        /// Must be called within PythonContext.ExecuteAsync.
+        /// </summary>
+        private static PyObject ConvertToPyList(List<string> items)
+        {
+            dynamic pyList = PythonEngine.Eval("[]");
+            foreach (var item in items)
+            {
+                pyList.append(item);
+            }
+            return pyList;
         }
 
         #endregion

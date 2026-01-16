@@ -5,6 +5,7 @@ using System.Text.Json;
 using DMMS.Models;
 using DMMS.Services;
 using DMMS.Tools;
+using Python.Runtime;
 
 namespace DMMSTesting.IntegrationTests
 {
@@ -580,21 +581,30 @@ namespace DMMSTesting.IntegrationTests
                 foreach (var group in byCollection)
                 {
                     dynamic collection = client.get_or_create_collection(name: group.Key);
-                    var idsList = group.Select(d => d.docId).ToList();
-                    var contentsList = group.Select(d => d.content).ToList();
 
-                    // Add documents one at a time to avoid Python list conversion issues
-                    for (int i = 0; i < idsList.Count; i++)
-                    {
-                        collection.add(
-                            ids: new[] { idsList[i] },
-                            documents: new[] { contentsList[i] }
-                        );
-                    }
+                    // Convert to proper Python lists to avoid deadlocks
+                    PyObject pyIds = ConvertToPyList(group.Select(d => d.docId).ToList());
+                    PyObject pyDocs = ConvertToPyList(group.Select(d => d.content).ToList());
+
+                    collection.add(ids: pyIds, documents: pyDocs);
                 }
 
                 return true;
             }, timeoutMs: 60000, operationName: "CreateExternalDbWithDocs");
+        }
+
+        /// <summary>
+        /// Converts a C# string list to a Python list.
+        /// Must be called within PythonContext.ExecuteAsync.
+        /// </summary>
+        private static PyObject ConvertToPyList(List<string> items)
+        {
+            dynamic pyList = PythonEngine.Eval("[]");
+            foreach (var item in items)
+            {
+                pyList.append(item);
+            }
+            return pyList;
         }
 
         /// <summary>

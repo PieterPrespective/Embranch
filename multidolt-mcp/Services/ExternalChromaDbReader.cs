@@ -63,15 +63,19 @@ namespace DMMS.Services
                     var clientId = GetOrCreateExternalClientId(dbPath);
                     dynamic client = ChromaClientPool.GetOrCreateClient(clientId, $"persistent:{dbPath}");
 
-                    // List collections
+                    // List collections and count documents
                     dynamic collections = client.list_collections();
                     var collectionCount = 0;
                     long totalDocuments = 0;
 
-                    foreach (dynamic collection in collections)
+                    foreach (dynamic collectionRef in collections)
                     {
                         collectionCount++;
-                        totalDocuments += collection.count();
+                        // ChromaDB v0.6.0 list_collections returns collection names as strings
+                        var collectionName = collectionRef.ToString();
+                        // Get the actual collection object to call count()
+                        dynamic actualCollection = client.get_collection(name: collectionName);
+                        totalDocuments += (int)actualCollection.count();
                     }
 
                     return new ExternalDbValidationResult
@@ -111,10 +115,13 @@ namespace DMMS.Services
                 var clientId = GetOrCreateExternalClientId(dbPath);
                 dynamic client = ChromaClientPool.GetOrCreateClient(clientId, $"persistent:{dbPath}");
 
-                dynamic collections = client.list_collections();
-                foreach (dynamic collection in collections)
+                // ChromaDB v0.6.0 list_collections returns collection names as strings
+                dynamic collectionNames = client.list_collections();
+                foreach (dynamic collectionName in collectionNames)
                 {
-                    var name = collection.name.ToString();
+                    var name = collectionName.ToString();
+                    // Get the actual collection object to access count and metadata
+                    dynamic collection = client.get_collection(name: name);
                     var count = (int)collection.count();
                     var metadata = ConvertPyDictToDictionary(collection.metadata);
 
@@ -291,11 +298,82 @@ namespace DMMS.Services
             }, timeoutMs: 30000, operationName: $"CollectionExists_{collectionName}");
         }
 
+        #region Internal Test Support Methods
+
+        /// <summary>
+        /// Creates or gets a collection in an external database.
+        /// Internal use for testing only - enables single-client access pattern.
+        /// </summary>
+        /// <param name="dbPath">Path to the external database</param>
+        /// <param name="collectionName">Name of the collection to create</param>
+        internal async Task CreateCollectionAsync(string dbPath, string collectionName)
+        {
+            _logger.LogDebug("Creating collection '{Collection}' in external database {Path}", collectionName, dbPath);
+
+            await PythonContext.ExecuteAsync(() =>
+            {
+                var clientId = GetOrCreateExternalClientId(dbPath);
+                dynamic client = ChromaClientPool.GetOrCreateClient(clientId, $"persistent:{dbPath}");
+                client.get_or_create_collection(name: collectionName);
+                return true;
+            }, timeoutMs: 30000, operationName: $"CreateCollection_{collectionName}");
+        }
+
+        /// <summary>
+        /// Adds documents to a collection in an external database.
+        /// Internal use for testing only - enables single-client access pattern.
+        /// </summary>
+        /// <param name="dbPath">Path to the external database</param>
+        /// <param name="collectionName">Name of the collection to add documents to</param>
+        /// <param name="documents">Array of document tuples (docId, content)</param>
+        internal async Task AddDocumentsAsync(string dbPath, string collectionName,
+            (string docId, string content)[] documents)
+        {
+            _logger.LogDebug("Adding {Count} documents to collection '{Collection}' in external database {Path}",
+                documents.Length, collectionName, dbPath);
+
+            await PythonContext.ExecuteAsync(() =>
+            {
+                var clientId = GetOrCreateExternalClientId(dbPath);
+                dynamic client = ChromaClientPool.GetOrCreateClient(clientId, $"persistent:{dbPath}");
+                dynamic collection = client.get_or_create_collection(name: collectionName);
+
+                foreach (var (docId, content) in documents)
+                {
+                    collection.add(
+                        ids: new[] { docId },
+                        documents: new[] { content }
+                    );
+                }
+                return true;
+            }, timeoutMs: 60000, operationName: $"AddDocuments_{collectionName}");
+        }
+
+        /// <summary>
+        /// Initializes an empty external database by creating a client connection.
+        /// Internal use for testing only - enables single-client access pattern.
+        /// </summary>
+        /// <param name="dbPath">Path to the external database</param>
+        internal async Task InitializeDatabaseAsync(string dbPath)
+        {
+            _logger.LogDebug("Initializing external database at {Path}", dbPath);
+
+            await PythonContext.ExecuteAsync(() =>
+            {
+                var clientId = GetOrCreateExternalClientId(dbPath);
+                dynamic client = ChromaClientPool.GetOrCreateClient(clientId, $"persistent:{dbPath}");
+                return true;
+            }, timeoutMs: 30000, operationName: "InitializeDatabase");
+        }
+
+        #endregion
+
         #region Helper Methods
 
         /// <summary>
         /// Gets or creates a unique client ID for the external database path.
-        /// Uses a stable hash of the path to allow client reuse.
+        /// Uses a stable hash of the path to allow client reuse across different
+        /// instances that access the same database (e.g., test setup and test execution).
         /// </summary>
         /// <param name="dbPath">Path to the external database</param>
         /// <returns>Client ID for the ChromaClientPool</returns>
@@ -305,9 +383,11 @@ namespace DMMS.Services
 
             return _externalClientIds.GetOrAdd(normalizedPath, _ =>
             {
-                var timestamp = DateTime.UtcNow.ToString("yyyyMMdd_HHmmss_fff");
+                // Use only path hash for deterministic client IDs
+                // This enables client reuse when the same database is accessed by
+                // different code paths (e.g., test setup creating data, then service reading it)
                 var pathHash = ImportUtility.ComputeContentHash(normalizedPath)[..8];
-                return $"ExternalChromaDb_{pathHash}_{timestamp}";
+                return $"ExternalChromaDb_{pathHash}";
             });
         }
 
