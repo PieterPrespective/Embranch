@@ -110,7 +110,94 @@ namespace DMMS.Services
                     // Process each external document
                     foreach (var extDoc in externalDocs)
                     {
-                        // Check if this document has a conflict
+                        // First check for cross-collection ID collision (xc_ prefix conflicts)
+                        var crossCollisionConflict = preview.Conflicts.FirstOrDefault(c =>
+                            c.ConflictId.StartsWith("xc_") &&
+                            c.DocumentId == extDoc.DocId &&
+                            c.TargetCollection == mapping.TargetCollection &&
+                            c.SourceCollection.Contains(mapping.SourceCollection));
+
+                        if (crossCollisionConflict != null)
+                        {
+                            // Determine resolution for this cross-collection conflict
+                            var resolution = DetermineResolution(crossCollisionConflict, resolutionMap, autoResolveRemaining, defaultStrategy);
+
+                            // Track resolution
+                            var resolutionKey = resolution.ResolutionType.ToString().ToLowerInvariant();
+                            resolutionBreakdown[resolutionKey] = resolutionBreakdown.GetValueOrDefault(resolutionKey, 0) + 1;
+                            conflictsResolved++;
+
+                            _logger.LogDebug("Resolving cross-collection conflict {Id} with strategy {Strategy}",
+                                crossCollisionConflict.ConflictId, resolution.ResolutionType);
+
+                            switch (resolution.ResolutionType)
+                            {
+                                case ImportResolutionType.Namespace:
+                                    // Prefix document ID with source collection name
+                                    var namespacedId = $"{mapping.SourceCollection}__{extDoc.DocId}";
+                                    var namespacedMetadata = BuildImportMetadata(extDoc, sourcePath, mapping.SourceCollection, null);
+                                    namespacedMetadata["original_doc_id"] = extDoc.DocId;
+                                    namespacedMetadata["namespaced_from"] = mapping.SourceCollection;
+
+                                    documentsByTarget[mapping.TargetCollection].Add(new ImportDocumentData
+                                    {
+                                        DocId = namespacedId,
+                                        Content = extDoc.Content,
+                                        Metadata = namespacedMetadata,
+                                        IsUpdate = false
+                                    });
+                                    break;
+
+                                case ImportResolutionType.KeepFirst:
+                                    // Only keep if this is the first source collection alphabetically
+                                    var firstSourceCol = crossCollisionConflict.SourceCollection
+                                        .Split('+')
+                                        .OrderBy(x => x)
+                                        .First();
+
+                                    if (mapping.SourceCollection == firstSourceCol)
+                                    {
+                                        documentsByTarget[mapping.TargetCollection].Add(CreateImportDocumentData(
+                                            extDoc, sourcePath, mapping.SourceCollection, isUpdate: false));
+                                    }
+                                    else
+                                    {
+                                        documentsSkipped++;
+                                    }
+                                    break;
+
+                                case ImportResolutionType.KeepLast:
+                                    // Only keep if this is the last source collection alphabetically
+                                    var lastSourceCol = crossCollisionConflict.SourceCollection
+                                        .Split('+')
+                                        .OrderBy(x => x)
+                                        .Last();
+
+                                    if (mapping.SourceCollection == lastSourceCol)
+                                    {
+                                        documentsByTarget[mapping.TargetCollection].Add(CreateImportDocumentData(
+                                            extDoc, sourcePath, mapping.SourceCollection, isUpdate: false));
+                                    }
+                                    else
+                                    {
+                                        documentsSkipped++;
+                                    }
+                                    break;
+
+                                case ImportResolutionType.Skip:
+                                    documentsSkipped++;
+                                    break;
+
+                                default:
+                                    // For other resolution types, skip the collision
+                                    documentsSkipped++;
+                                    break;
+                            }
+
+                            continue; // Skip normal processing for cross-collection conflicts
+                        }
+
+                        // Check if this document has a regular conflict
                         var conflict = preview.Conflicts.FirstOrDefault(c =>
                             c.SourceCollection == mapping.SourceCollection &&
                             c.TargetCollection == mapping.TargetCollection &&

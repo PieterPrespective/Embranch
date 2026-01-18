@@ -12,6 +12,7 @@ namespace DMMS.Tools
     /// MCP tool for executing import operations from external ChromaDB databases.
     /// Supports automatic resolution and custom conflict handling.
     /// Uses IChromaDbService.AddDocumentsAsync for proper chunking and batch operations.
+    /// Supports transparent migration of legacy ChromaDB databases.
     /// </summary>
     [McpServerToolType]
     public class ExecuteImportTool
@@ -21,6 +22,7 @@ namespace DMMS.Tools
         private readonly IImportAnalyzer _importAnalyzer;
         private readonly IExternalChromaDbReader _externalDbReader;
         private readonly ISyncManagerV2 _syncManager;
+        private readonly ILegacyDbMigrator _legacyMigrator;
 
         /// <summary>
         /// Initializes a new instance of the ExecuteImportTool class
@@ -30,18 +32,21 @@ namespace DMMS.Tools
         /// <param name="importAnalyzer">Service for analyzing imports and detecting conflicts</param>
         /// <param name="externalDbReader">Service for reading external ChromaDB databases</param>
         /// <param name="syncManager">Sync manager for staging to Dolt</param>
+        /// <param name="legacyMigrator">Service for handling legacy database migration</param>
         public ExecuteImportTool(
             ILogger<ExecuteImportTool> logger,
             IImportExecutor importExecutor,
             IImportAnalyzer importAnalyzer,
             IExternalChromaDbReader externalDbReader,
-            ISyncManagerV2 syncManager)
+            ISyncManagerV2 syncManager,
+            ILegacyDbMigrator legacyMigrator)
         {
             _logger = logger;
             _importExecutor = importExecutor;
             _importAnalyzer = importAnalyzer;
             _externalDbReader = externalDbReader;
             _syncManager = syncManager;
+            _legacyMigrator = legacyMigrator;
         }
 
         /// <summary>
@@ -56,7 +61,24 @@ namespace DMMS.Tools
         /// <param name="stage_to_dolt">Whether to stage imported documents to Dolt</param>
         /// <param name="commit_message">Optional commit message if staging to Dolt</param>
         [McpServerTool]
-        [Description("Execute an import operation from an external ChromaDB database. Use preview_import first to identify conflicts.")]
+        [Description(@"Execute an import operation from an external ChromaDB database. Call preview_import first to see conflicts and get conflict IDs.
+
+PARAMETERS:
+- filepath, filter: Same as preview_import (see that tool for filter format with wildcards, collection mapping, and document filtering)
+- conflict_resolutions (optional): JSON specifying how to resolve specific conflicts (see format below)
+- auto_resolve_remaining (default: true): Auto-resolve unspecified conflicts using default_strategy
+- default_strategy (default: 'keep_source'): Resolution for auto-resolved conflicts:
+  * 'keep_source' - Use external database version (overwrites local)
+  * 'keep_target' - Keep local version (skip this document)
+  * 'skip' - Skip the document entirely
+- stage_to_dolt (default: true): Commit imported documents to Dolt after import
+- commit_message (optional): Custom commit message (auto-generated if omitted)
+
+CONFLICT RESOLUTION FORMAT (use conflict IDs from preview_import):
+1. Structured: {""resolutions"": [{""conflict_id"": ""imp_abc123"", ""resolution_type"": ""keep_source""}], ""default_strategy"": ""skip""}
+2. Simple: {""imp_abc123"": ""keep_source"", ""imp_def456"": ""keep_target""}
+
+WORKFLOW: preview_import -> review conflicts -> execute_import with resolutions")]
         public async Task<object> ExecuteImport(
             string filepath,
             string? filter = null,
@@ -87,8 +109,21 @@ namespace DMMS.Tools
                     };
                 }
 
+                // Create legacy-aware context for this import operation
+                await using var legacyContext = await LegacyDbImportContext.CreateAsync(
+                    _legacyMigrator, filepath, _logger);
+
+                if (legacyContext.WasMigrated)
+                {
+                    ToolLoggingUtility.LogToolInfo(_logger, toolName,
+                        $"Legacy database detected and migrated for compatibility. Using migrated copy.");
+                }
+
+                // Use effective path (migrated copy if needed, original otherwise)
+                var effectivePath = legacyContext.EffectivePath;
+
                 // Validate external database
-                var validation = await _externalDbReader.ValidateExternalDbAsync(filepath);
+                var validation = await _externalDbReader.ValidateExternalDbAsync(effectivePath);
                 if (!validation.IsValid)
                 {
                     var error = "INVALID_EXTERNAL_DATABASE";
@@ -98,7 +133,8 @@ namespace DMMS.Tools
                         success = false,
                         error = error,
                         message = validation.ErrorMessage,
-                        source_path = filepath
+                        source_path = filepath,
+                        migration_info = legacyContext.MigrationInfo
                     };
                 }
 
@@ -161,10 +197,10 @@ namespace DMMS.Tools
                     }
                 }
 
-                // Execute the import
+                // Execute the import using effective path
                 ToolLoggingUtility.LogToolInfo(_logger, toolName, "Executing import...");
                 var result = await _importExecutor.ExecuteImportAsync(
-                    filepath,
+                    effectivePath,
                     importFilter,
                     resolutions,
                     auto_resolve_remaining,
@@ -186,7 +222,8 @@ namespace DMMS.Tools
                             documents_updated = result.DocumentsUpdated,
                             documents_skipped = result.DocumentsSkipped,
                             conflicts_resolved = result.ConflictsResolved
-                        }
+                        },
+                        migration_info = legacyContext.MigrationInfo
                     };
                 }
 
@@ -248,7 +285,7 @@ namespace DMMS.Tools
                     success = true,
                     import_result = new
                     {
-                        source_path = filepath,
+                        source_path = filepath, // Report original path to user
                         documents_imported = result.DocumentsImported,
                         documents_updated = result.DocumentsUpdated,
                         documents_skipped = result.DocumentsSkipped,
@@ -263,11 +300,13 @@ namespace DMMS.Tools
                         documents_staged = documentsStaged,
                         commit_hash = commitHash
                     },
-                    message = result.Message
+                    message = result.Message,
+                    migration_info = legacyContext.WasMigrated ? legacyContext.MigrationInfo : null
                 };
 
                 ToolLoggingUtility.LogToolSuccess(_logger, toolName, methodName,
-                    $"Import complete: {result.DocumentsImported} imported, {result.DocumentsUpdated} updated, {result.ConflictsResolved} conflicts resolved");
+                    $"Import complete: {result.DocumentsImported} imported, {result.DocumentsUpdated} updated, {result.ConflictsResolved} conflicts resolved" +
+                    (legacyContext.WasMigrated ? " [migrated legacy DB]" : ""));
 
                 return response;
             }

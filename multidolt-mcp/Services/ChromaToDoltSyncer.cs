@@ -4,6 +4,7 @@ using System.Linq;
 using System.Text.Json;
 using System.Threading.Tasks;
 using DMMS.Models;
+using DMMS.Utilities;
 using Microsoft.Extensions.Logging;
 
 namespace DMMS.Services
@@ -251,22 +252,23 @@ namespace DMMS.Services
                 throw new InvalidOperationException($"DocId is too long: {doltDoc.DocId.Length} characters (max 64)");
             }
             
-            // Prepare metadata JSON
+            // Prepare metadata JSON and escape for SQL embedding (PP13-77 fix)
             var metadataJson = JsonSerializer.Serialize(doltDoc.Metadata ?? new Dictionary<string, object>());
-            
+            var escapedMetadataJson = SqlEscapeUtility.EscapeJsonForSql(metadataJson);
+
             // Escape single quotes in content for SQL
-            var escapedContent = doltDoc.Content.Replace("'", "''");
-            var escapedTitle = doltDoc.Title?.Replace("'", "''");
-            var escapedDocType = doltDoc.DocType?.Replace("'", "''");
-            
+            var escapedContent = SqlEscapeUtility.EscapeStringForSql(doltDoc.Content);
+            var escapedTitle = doltDoc.Title != null ? SqlEscapeUtility.EscapeStringForSql(doltDoc.Title) : null;
+            var escapedDocType = doltDoc.DocType != null ? SqlEscapeUtility.EscapeStringForSql(doltDoc.DocType) : null;
+
             var sql = $@"
-                INSERT INTO documents 
+                INSERT INTO documents
                     (doc_id, collection_name, content, content_hash, title, doc_type, metadata, created_at, updated_at)
-                VALUES 
+                VALUES
                     ('{doltDoc.DocId}', '{collectionName}', '{escapedContent}', '{doltDoc.ContentHash}',
                      {(escapedTitle != null ? $"'{escapedTitle}'" : "NULL")},
                      {(escapedDocType != null ? $"'{escapedDocType}'" : "NULL")},
-                     '{metadataJson}', NOW(), NOW())";
+                     '{escapedMetadataJson}', NOW(), NOW())";
 
             _logger?.LogDebug("Executing SQL: INSERT with DocId='{DocId}'", doltDoc.DocId);
             await _dolt.ExecuteAsync(sql);
@@ -285,24 +287,25 @@ namespace DMMS.Services
 
             // Convert to DoltDocumentV2
             var doltDoc = DocumentConverterUtilityV2.ConvertChromaToDolt(doc);
-            
-            // Prepare metadata JSON
+
+            // Prepare metadata JSON and escape for SQL embedding (PP13-77 fix)
             var metadataJson = JsonSerializer.Serialize(doltDoc.Metadata ?? new Dictionary<string, object>());
-            
+            var escapedMetadataJson = SqlEscapeUtility.EscapeJsonForSql(metadataJson);
+
             // Escape single quotes for SQL
-            var escapedContent = doltDoc.Content.Replace("'", "''");
-            var escapedTitle = doltDoc.Title?.Replace("'", "''");
-            var escapedDocType = doltDoc.DocType?.Replace("'", "''");
-            
+            var escapedContent = SqlEscapeUtility.EscapeStringForSql(doltDoc.Content);
+            var escapedTitle = doltDoc.Title != null ? SqlEscapeUtility.EscapeStringForSql(doltDoc.Title) : null;
+            var escapedDocType = doltDoc.DocType != null ? SqlEscapeUtility.EscapeStringForSql(doltDoc.DocType) : null;
+
             var sql = $@"
-                UPDATE documents 
+                UPDATE documents
                 SET content = '{escapedContent}',
                     content_hash = '{doltDoc.ContentHash}',
                     title = {(escapedTitle != null ? $"'{escapedTitle}'" : "NULL")},
                     doc_type = {(escapedDocType != null ? $"'{escapedDocType}'" : "NULL")},
-                    metadata = '{metadataJson}',
+                    metadata = '{escapedMetadataJson}',
                     updated_at = NOW()
-                WHERE doc_id = '{doltDoc.DocId}' 
+                WHERE doc_id = '{doltDoc.DocId}'
                   AND collection_name = '{doltDoc.CollectionName}'";
 
             await _dolt.ExecuteAsync(sql);

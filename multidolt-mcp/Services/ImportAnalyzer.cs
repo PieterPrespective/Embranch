@@ -97,6 +97,21 @@ namespace DMMS.Services
                         affectedCollections.Add(targetCollection);
                     }
 
+                    // NEW: Check for cross-collection ID collisions when multiple sources target the same collection
+                    if (mappings.Count > 1)
+                    {
+                        var collisionConflicts = await DetectCrossCollectionIdCollisionsAsync(
+                            sourcePath, mappings, targetCollection, includeContentPreview);
+
+                        if (collisionConflicts.Count > 0)
+                        {
+                            _logger.LogWarning(
+                                "Detected {Count} cross-collection ID collisions for target {Target}",
+                                collisionConflicts.Count, targetCollection);
+                            allConflicts.AddRange(collisionConflicts);
+                        }
+                    }
+
                     // Analyze each source collection mapping to this target
                     foreach (var mapping in mappings)
                     {
@@ -301,6 +316,102 @@ namespace DMMS.Services
         }
 
         #region Private Helper Methods
+
+        /// <summary>
+        /// Detects document ID collisions across multiple source collections
+        /// being merged into the same target collection.
+        /// </summary>
+        /// <param name="sourcePath">Path to external database</param>
+        /// <param name="mappings">Collection mappings all targeting the same collection</param>
+        /// <param name="targetCollection">Target collection name</param>
+        /// <param name="includeContentPreview">Whether to include content in conflict info</param>
+        /// <returns>List of collision conflicts</returns>
+        private async Task<List<ImportConflictInfo>> DetectCrossCollectionIdCollisionsAsync(
+            string sourcePath,
+            List<CollectionMapping> mappings,
+            string targetCollection,
+            bool includeContentPreview)
+        {
+            var conflicts = new List<ImportConflictInfo>();
+
+            // Collect all documents from all source collections for this target
+            // Key: docId -> List of (sourceCollection, document)
+            var docIdToSources = new Dictionary<string, List<(string sourceCollection, ExternalDocument doc)>>();
+
+            foreach (var mapping in mappings)
+            {
+                var docs = await _externalReader.GetExternalDocumentsAsync(
+                    sourcePath, mapping.SourceCollection, mapping.DocumentPatterns);
+
+                foreach (var doc in docs)
+                {
+                    if (!docIdToSources.ContainsKey(doc.DocId))
+                        docIdToSources[doc.DocId] = new List<(string, ExternalDocument)>();
+
+                    docIdToSources[doc.DocId].Add((mapping.SourceCollection, doc));
+                }
+            }
+
+            // Identify collisions (same docId in multiple source collections)
+            foreach (var (docId, sources) in docIdToSources.Where(kvp => kvp.Value.Count > 1))
+            {
+                _logger.LogDebug(
+                    "Document ID '{DocId}' found in {Count} source collections: {Collections}",
+                    docId, sources.Count, string.Join(", ", sources.Select(s => s.sourceCollection)));
+
+                // Sort sources by collection name for deterministic conflict generation
+                var sortedSources = sources.OrderBy(s => s.sourceCollection).ToList();
+
+                // Create conflict between first and each subsequent occurrence
+                for (int i = 1; i < sortedSources.Count; i++)
+                {
+                    var first = sortedSources[0];
+                    var other = sortedSources[i];
+
+                    var conflict = CreateCrossCollectionConflict(
+                        first, other, targetCollection, includeContentPreview);
+                    conflicts.Add(conflict);
+                }
+            }
+
+            return conflicts;
+        }
+
+        /// <summary>
+        /// Creates an ImportConflictInfo for a cross-collection ID collision
+        /// </summary>
+        private ImportConflictInfo CreateCrossCollectionConflict(
+            (string sourceCollection, ExternalDocument doc) first,
+            (string sourceCollection, ExternalDocument doc) second,
+            string targetCollection,
+            bool includeContentPreview)
+        {
+            var conflictId = ImportUtility.GenerateCrossCollectionConflictId(
+                first.sourceCollection, second.sourceCollection,
+                targetCollection, first.doc.DocId);
+
+            _logger.LogDebug(
+                "Generated cross-collection conflict ID {Id} for doc '{DocId}' ({Col1} vs {Col2})",
+                conflictId, first.doc.DocId, first.sourceCollection, second.sourceCollection);
+
+            return new ImportConflictInfo
+            {
+                ConflictId = conflictId,
+                SourceCollection = $"{first.sourceCollection}+{second.sourceCollection}",
+                TargetCollection = targetCollection,
+                DocumentId = first.doc.DocId,
+                Type = ImportConflictType.IdCollision,
+                AutoResolvable = false,
+                SourceContent = includeContentPreview ? TruncateContent(first.doc.Content) : null,
+                TargetContent = includeContentPreview ? TruncateContent(second.doc.Content) : null,
+                SourceContentHash = first.doc.ContentHash,
+                TargetContentHash = second.doc.ContentHash,
+                SuggestedResolution = "namespace",
+                ResolutionOptions = new List<string> { "namespace", "keep_first", "keep_last", "skip" },
+                SourceMetadata = first.doc.Metadata,
+                TargetMetadata = second.doc.Metadata
+            };
+        }
 
         /// <summary>
         /// Resolves collection mappings from the filter, expanding wildcards to actual collection names
@@ -610,13 +721,22 @@ namespace DMMS.Services
         private bool AreMetadatasEqual(Dictionary<string, object>? meta1, Dictionary<string, object>? meta2)
         {
             if (meta1 == null && meta2 == null) return true;
-            if (meta1 == null || meta2 == null) return false;
 
-            // Ignore internal metadata fields
-            var ignoredFields = new HashSet<string> { "is_local_change", "import_source", "import_timestamp" };
+            // Treat null and empty dictionary as equivalent
+            var empty1 = meta1 == null || meta1.Count == 0;
+            var empty2 = meta2 == null || meta2.Count == 0;
 
-            var filtered1 = meta1.Where(kvp => !ignoredFields.Contains(kvp.Key)).ToDictionary(kvp => kvp.Key, kvp => kvp.Value);
-            var filtered2 = meta2.Where(kvp => !ignoredFields.Contains(kvp.Key)).ToDictionary(kvp => kvp.Key, kvp => kvp.Value);
+            // Ignore internal metadata fields (change tracking and chunking metadata)
+            var ignoredFields = new HashSet<string>
+            {
+                "is_local_change", "import_source", "import_timestamp",
+                "source_id", "chunk_index", "total_chunks"  // Chunking metadata added by local service
+            };
+
+            var filtered1 = meta1?.Where(kvp => !ignoredFields.Contains(kvp.Key)).ToDictionary(kvp => kvp.Key, kvp => kvp.Value)
+                ?? new Dictionary<string, object>();
+            var filtered2 = meta2?.Where(kvp => !ignoredFields.Contains(kvp.Key)).ToDictionary(kvp => kvp.Key, kvp => kvp.Value)
+                ?? new Dictionary<string, object>();
 
             if (filtered1.Count != filtered2.Count) return false;
 

@@ -386,3 +386,81 @@ The existing test data from `OutOfDateDatabaseMigrationTests` can be reused:
 
 **Total New/Modified Files**: ~10
 **Total New Tests**: 21+
+
+---
+
+## Critical Implementation Notes (Added 2026-01-16)
+
+### Python List Conversion Requirement
+
+**IMPORTANT**: All test helper methods that add documents to ChromaDB must use proper Python list conversion. Passing C# arrays directly causes Python.NET deadlocks.
+
+**Required Pattern:**
+```csharp
+using Python.Runtime;
+
+// In test helper methods:
+private async Task CreateExternalDatabaseWithDocuments(
+    (string collection, string docId, string content)[] documents)
+{
+    await PythonContext.ExecuteAsync(() =>
+    {
+        // ... client setup ...
+
+        foreach (var group in byCollection)
+        {
+            dynamic collection = client.get_or_create_collection(name: group.Key);
+
+            // CORRECT: Convert to proper Python lists
+            PyObject pyIds = ConvertToPyList(group.Select(d => d.docId).ToList());
+            PyObject pyDocs = ConvertToPyList(group.Select(d => d.content).ToList());
+            collection.add(ids: pyIds, documents: pyDocs);
+        }
+        return true;
+    }, timeoutMs: 60000, operationName: "CreateExternalDbWithDocs");
+}
+
+private static PyObject ConvertToPyList(List<string> items)
+{
+    dynamic pyList = PythonEngine.Eval("[]");
+    foreach (var item in items)
+    {
+        pyList.append(item);
+    }
+    return pyList;
+}
+```
+
+**INCORRECT Pattern (causes deadlock):**
+```csharp
+// DO NOT use C# arrays directly - this causes deadlocks!
+collection.add(
+    ids: new[] { docId },
+    documents: new[] { content }
+);
+```
+
+### ChromaDB v0.6.0 API Changes
+
+The `list_collections()` method now returns collection **names** (strings) instead of collection objects.
+
+**Correct Pattern:**
+```csharp
+dynamic collectionNames = client.list_collections();
+foreach (dynamic collectionName in collectionNames)
+{
+    var name = collectionName.ToString();
+    // Get the actual collection object to access properties
+    dynamic collection = client.get_collection(name: name);
+    var count = (int)collection.count();
+    var metadata = collection.metadata;
+}
+```
+
+### Reference Test Files
+
+The following test files contain working examples of the correct patterns:
+- `ExternalChromaDbReaderTests.cs`
+- `ImportAnalyzerTests.cs`
+- `ImportExecutorTests.cs`
+- `PP13_75_ImportToolIntegrationTests.cs`

@@ -298,76 +298,6 @@ namespace DMMS.Services
             }, timeoutMs: 30000, operationName: $"CollectionExists_{collectionName}");
         }
 
-        #region Internal Test Support Methods
-
-        /// <summary>
-        /// Creates or gets a collection in an external database.
-        /// Internal use for testing only - enables single-client access pattern.
-        /// </summary>
-        /// <param name="dbPath">Path to the external database</param>
-        /// <param name="collectionName">Name of the collection to create</param>
-        internal async Task CreateCollectionAsync(string dbPath, string collectionName)
-        {
-            _logger.LogDebug("Creating collection '{Collection}' in external database {Path}", collectionName, dbPath);
-
-            await PythonContext.ExecuteAsync(() =>
-            {
-                var clientId = GetOrCreateExternalClientId(dbPath);
-                dynamic client = ChromaClientPool.GetOrCreateClient(clientId, $"persistent:{dbPath}");
-                client.get_or_create_collection(name: collectionName);
-                return true;
-            }, timeoutMs: 30000, operationName: $"CreateCollection_{collectionName}");
-        }
-
-        /// <summary>
-        /// Adds documents to a collection in an external database.
-        /// Internal use for testing only - enables single-client access pattern.
-        /// </summary>
-        /// <param name="dbPath">Path to the external database</param>
-        /// <param name="collectionName">Name of the collection to add documents to</param>
-        /// <param name="documents">Array of document tuples (docId, content)</param>
-        internal async Task AddDocumentsAsync(string dbPath, string collectionName,
-            (string docId, string content)[] documents)
-        {
-            _logger.LogDebug("Adding {Count} documents to collection '{Collection}' in external database {Path}",
-                documents.Length, collectionName, dbPath);
-
-            await PythonContext.ExecuteAsync(() =>
-            {
-                var clientId = GetOrCreateExternalClientId(dbPath);
-                dynamic client = ChromaClientPool.GetOrCreateClient(clientId, $"persistent:{dbPath}");
-                dynamic collection = client.get_or_create_collection(name: collectionName);
-
-                foreach (var (docId, content) in documents)
-                {
-                    collection.add(
-                        ids: new[] { docId },
-                        documents: new[] { content }
-                    );
-                }
-                return true;
-            }, timeoutMs: 60000, operationName: $"AddDocuments_{collectionName}");
-        }
-
-        /// <summary>
-        /// Initializes an empty external database by creating a client connection.
-        /// Internal use for testing only - enables single-client access pattern.
-        /// </summary>
-        /// <param name="dbPath">Path to the external database</param>
-        internal async Task InitializeDatabaseAsync(string dbPath)
-        {
-            _logger.LogDebug("Initializing external database at {Path}", dbPath);
-
-            await PythonContext.ExecuteAsync(() =>
-            {
-                var clientId = GetOrCreateExternalClientId(dbPath);
-                dynamic client = ChromaClientPool.GetOrCreateClient(clientId, $"persistent:{dbPath}");
-                return true;
-            }, timeoutMs: 30000, operationName: "InitializeDatabase");
-        }
-
-        #endregion
-
         #region Helper Methods
 
         /// <summary>
@@ -398,6 +328,20 @@ namespace DMMS.Services
         {
             var result = new Dictionary<string, object>();
             if (pyDict == null) return result;
+
+            // Check if pyDict is Python None (PyObject.IsNone() or equivalent check)
+            // In Python.NET, Python None is not C# null but a PyObject representing None
+            try
+            {
+                if (pyDict is PyObject pyObj && pyObj.IsNone())
+                {
+                    return result;
+                }
+            }
+            catch
+            {
+                // If we can't check IsNone, continue and let the iteration handle it
+            }
 
             try
             {

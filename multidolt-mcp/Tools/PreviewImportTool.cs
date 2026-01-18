@@ -11,6 +11,7 @@ namespace DMMS.Tools
     /// <summary>
     /// MCP tool for previewing import operations from external ChromaDB databases.
     /// Provides detailed conflict analysis and change preview before execution.
+    /// Supports transparent migration of legacy ChromaDB databases.
     /// </summary>
     [McpServerToolType]
     public class PreviewImportTool
@@ -18,6 +19,7 @@ namespace DMMS.Tools
         private readonly ILogger<PreviewImportTool> _logger;
         private readonly IImportAnalyzer _importAnalyzer;
         private readonly IExternalChromaDbReader _externalDbReader;
+        private readonly ILegacyDbMigrator _legacyMigrator;
 
         /// <summary>
         /// Initializes a new instance of the PreviewImportTool class
@@ -25,14 +27,17 @@ namespace DMMS.Tools
         /// <param name="logger">Logger for diagnostic information</param>
         /// <param name="importAnalyzer">Service for analyzing imports and detecting conflicts</param>
         /// <param name="externalDbReader">Service for reading external ChromaDB databases</param>
+        /// <param name="legacyMigrator">Service for handling legacy database migration</param>
         public PreviewImportTool(
             ILogger<PreviewImportTool> logger,
             IImportAnalyzer importAnalyzer,
-            IExternalChromaDbReader externalDbReader)
+            IExternalChromaDbReader externalDbReader,
+            ILegacyDbMigrator legacyMigrator)
         {
             _logger = logger;
             _importAnalyzer = importAnalyzer;
             _externalDbReader = externalDbReader;
+            _legacyMigrator = legacyMigrator;
         }
 
         /// <summary>
@@ -43,7 +48,46 @@ namespace DMMS.Tools
         /// <param name="filter">JSON filter specifying what to import (empty = import all)</param>
         /// <param name="include_content_preview">Include content snippets in conflict details</param>
         [McpServerTool]
-        [Description("Preview an import operation from an external ChromaDB database. Returns detailed conflict information and change preview.")]
+        [Description(@"Preview an import operation from an external ChromaDB database. Analyzes conflicts and shows what changes will occur before executing.
+
+PARAMETERS:
+- filepath (required): Path to the external ChromaDB database folder (e.g., 'C:\data\my_chromadb' or '/home/user/chromadb')
+- filter (optional): JSON string specifying what to import. If omitted, imports ALL collections and documents.
+- include_content_preview (optional): If true, includes content snippets in conflict details for easier comparison.
+
+FILTER FORMAT:
+The filter parameter accepts JSON with a 'collections' array. Each entry maps source collection(s) to a target collection.
+
+Examples:
+1. Import all (default when filter is empty or omitted):
+   {}
+
+2. Map specific collections:
+   {""collections"": [{""name"": ""source_collection"", ""import_into"": ""target_collection""}]}
+
+3. Use wildcards to match multiple collections (* matches any characters):
+   {""collections"": [{""name"": ""project_*"", ""import_into"": ""all_projects""}]}
+   This imports project_alpha, project_beta, etc. into 'all_projects'
+
+4. Consolidate multiple sources into one target:
+   {""collections"": [
+     {""name"": ""archive_2024_*"", ""import_into"": ""consolidated_archive""},
+     {""name"": ""archive_2025_*"", ""import_into"": ""consolidated_archive""}
+   ]}
+
+5. Filter specific documents within a collection:
+   {""collections"": [{""name"": ""docs"", ""import_into"": ""local_docs"", ""documents"": [""*_summary"", ""report_*""]}]}
+   Only imports documents matching the patterns.
+
+LEGACY DATABASE SUPPORT:
+Older ChromaDB databases are automatically detected and migrated transparently (original is never modified).
+
+RETURNS:
+- source_validation: Database statistics (collection count, document count)
+- can_auto_import: Whether import can proceed without manual conflict resolution
+- import_preview: Summary of changes (documents to add/update/skip, collections to create)
+- conflicts: List of conflicts with IDs, types, and resolution options
+- recommended_action: Suggested next steps")]
         public async Task<object> PreviewImport(
             string filepath,
             string? filter = null,
@@ -70,8 +114,21 @@ namespace DMMS.Tools
                     };
                 }
 
+                // Create legacy-aware context for this import operation
+                await using var legacyContext = await LegacyDbImportContext.CreateAsync(
+                    _legacyMigrator, filepath, _logger);
+
+                if (legacyContext.WasMigrated)
+                {
+                    ToolLoggingUtility.LogToolInfo(_logger, toolName,
+                        $"Legacy database detected and migrated for compatibility. Using migrated copy.");
+                }
+
+                // Use effective path (migrated copy if needed, original otherwise)
+                var effectivePath = legacyContext.EffectivePath;
+
                 // Validate external database
-                var validation = await _externalDbReader.ValidateExternalDbAsync(filepath);
+                var validation = await _externalDbReader.ValidateExternalDbAsync(effectivePath);
                 if (!validation.IsValid)
                 {
                     var error = "INVALID_EXTERNAL_DATABASE";
@@ -81,7 +138,8 @@ namespace DMMS.Tools
                         success = false,
                         error = error,
                         message = validation.ErrorMessage,
-                        source_path = filepath
+                        source_path = filepath,
+                        migration_info = legacyContext.MigrationInfo
                     };
                 }
 
@@ -113,9 +171,9 @@ namespace DMMS.Tools
                     }
                 }
 
-                // Analyze the import
+                // Analyze the import using effective path
                 ToolLoggingUtility.LogToolInfo(_logger, toolName, "Analyzing import...");
-                var preview = await _importAnalyzer.AnalyzeImportAsync(filepath, importFilter, include_content_preview);
+                var preview = await _importAnalyzer.AnalyzeImportAsync(effectivePath, importFilter, include_content_preview);
 
                 if (!preview.Success)
                 {
@@ -126,7 +184,8 @@ namespace DMMS.Tools
                         success = false,
                         error = error,
                         message = preview.ErrorMessage,
-                        source_path = filepath
+                        source_path = filepath,
+                        migration_info = legacyContext.MigrationInfo
                     };
                 }
 
@@ -134,7 +193,7 @@ namespace DMMS.Tools
                 var response = new
                 {
                     success = true,
-                    source_path = filepath,
+                    source_path = filepath, // Report original path to user
                     source_validation = new
                     {
                         is_valid = validation.IsValid,
@@ -174,14 +233,16 @@ namespace DMMS.Tools
                         resolution_options = c.ResolutionOptions
                     }).ToList(),
                     recommended_action = preview.RecommendedAction,
-                    message = preview.Message
+                    message = preview.Message,
+                    migration_info = legacyContext.WasMigrated ? legacyContext.MigrationInfo : null
                 };
 
                 var conflictCount = preview.TotalConflicts;
                 var autoResolvableCount = preview.AutoResolvableConflicts;
 
                 ToolLoggingUtility.LogToolSuccess(_logger, toolName, methodName,
-                    $"Preview complete: {conflictCount} conflicts ({autoResolvableCount} auto-resolvable)");
+                    $"Preview complete: {conflictCount} conflicts ({autoResolvableCount} auto-resolvable)" +
+                    (legacyContext.WasMigrated ? " [migrated legacy DB]" : ""));
 
                 return response;
             }

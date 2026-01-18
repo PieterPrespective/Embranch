@@ -100,6 +100,9 @@ builder.Services.AddSingleton<IExternalChromaDbReader, ExternalChromaDbReader>()
 builder.Services.AddSingleton<IImportAnalyzer, ImportAnalyzer>();
 builder.Services.AddSingleton<IImportExecutor, ImportExecutor>();
 
+// Register legacy database migration service (PP13-76)
+builder.Services.AddSingleton<ILegacyDbMigrator, LegacyDbMigrator>();
+
 builder.Services
     .AddMcpServer()
     .WithStdioServerTransport()

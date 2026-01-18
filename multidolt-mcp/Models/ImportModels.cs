@@ -308,7 +308,24 @@ namespace DMMS.Models
         /// <summary>
         /// Apply custom content provided by user
         /// </summary>
-        Custom
+        Custom,
+
+        /// <summary>
+        /// Namespace document IDs with source collection prefix to avoid collision.
+        /// Results in IDs like "SourceCollection__original_doc_id".
+        /// Original ID preserved in metadata as "original_doc_id".
+        /// </summary>
+        Namespace,
+
+        /// <summary>
+        /// Keep only the first occurrence (from alphabetically first source collection)
+        /// </summary>
+        KeepFirst,
+
+        /// <summary>
+        /// Keep only the last occurrence (from alphabetically last source collection)
+        /// </summary>
+        KeepLast
     }
 
     /// <summary>
@@ -559,6 +576,32 @@ namespace DMMS.Models
         }
 
         /// <summary>
+        /// Generates a deterministic conflict ID for cross-collection ID collisions.
+        /// Uses sorted collection names to ensure same ID regardless of detection order.
+        /// Format: xc_[12-char-hex]
+        /// </summary>
+        /// <param name="sourceCollection1">First source collection name</param>
+        /// <param name="sourceCollection2">Second source collection name</param>
+        /// <param name="targetCollection">Target collection name</param>
+        /// <param name="documentId">Document ID that collides</param>
+        /// <returns>Deterministic cross-collection conflict ID string</returns>
+        public static string GenerateCrossCollectionConflictId(
+            string sourceCollection1,
+            string sourceCollection2,
+            string targetCollection,
+            string documentId)
+        {
+            // Sort collection names for determinism (same result regardless of order detected)
+            var sorted = new[] { sourceCollection1, sourceCollection2 }.OrderBy(x => x).ToArray();
+            var input = $"CROSS_{sorted[0]}_{sorted[1]}_{targetCollection}_{documentId}";
+
+            using var sha256 = SHA256.Create();
+            var hashBytes = sha256.ComputeHash(Encoding.UTF8.GetBytes(input));
+            var hashHex = BitConverter.ToString(hashBytes).Replace("-", "").ToLowerInvariant();
+            return $"xc_{hashHex[..12]}";
+        }
+
+        /// <summary>
         /// Computes SHA-256 hash of content for comparison.
         /// Used for detecting content modifications between source and target.
         /// </summary>
@@ -594,6 +637,11 @@ namespace DMMS.Models
                 "merge" => ImportResolutionType.Merge,
                 "skip" => ImportResolutionType.Skip,
                 "custom" => ImportResolutionType.Custom,
+                "namespace" => ImportResolutionType.Namespace,
+                "keepfirst" => ImportResolutionType.KeepFirst,
+                "first" => ImportResolutionType.KeepFirst,
+                "keeplast" => ImportResolutionType.KeepLast,
+                "last" => ImportResolutionType.KeepLast,
                 _ => ImportResolutionType.KeepSource
             };
         }
@@ -614,7 +662,7 @@ namespace DMMS.Models
                 ImportConflictType.CollectionMismatch => new List<string>
                     { "keep_source", "keep_target", "skip" },
                 ImportConflictType.IdCollision => new List<string>
-                    { "keep_source", "keep_target", "skip" },
+                    { "namespace", "keep_first", "keep_last", "skip" },
                 _ => new List<string> { "keep_source", "keep_target", "skip" }
             };
         }
@@ -645,7 +693,7 @@ namespace DMMS.Models
                 ImportConflictType.ContentModification => "keep_source",
                 ImportConflictType.MetadataConflict => "keep_source",
                 ImportConflictType.CollectionMismatch => "keep_target",
-                ImportConflictType.IdCollision => "skip",
+                ImportConflictType.IdCollision => "namespace",
                 _ => "keep_source"
             };
         }

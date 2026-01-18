@@ -5,6 +5,7 @@ using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using DMMS.Models;
+using DMMS.Utilities;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
@@ -2350,9 +2351,10 @@ namespace DMMS.Services
                 JsonSerializer.Deserialize<Dictionary<string, object>>(update.NewName) ?? new Dictionary<string, object>();
 
             var metadataJson = JsonSerializer.Serialize(newMetadata);
+            var escapedMetadataJson = SqlEscapeUtility.EscapeJsonForSql(metadataJson);
 
-            // Update collection metadata in collections table
-            await _dolt.QueryAsync<object>($"UPDATE collections SET metadata = '{metadataJson}' WHERE collection_name = '{update.CollectionName}'");
+            // Update collection metadata in collections table (PP13-77 fix: escape JSON for SQL)
+            await _dolt.QueryAsync<object>($"UPDATE collections SET metadata = '{escapedMetadataJson}' WHERE collection_name = '{update.CollectionName}'");
             
             _logger.LogInformation("ProcessCollectionMetadataUpdate: Updated metadata for collection '{Collection}'", 
                 update.CollectionName);

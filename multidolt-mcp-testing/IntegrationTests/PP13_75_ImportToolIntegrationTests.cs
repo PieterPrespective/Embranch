@@ -24,6 +24,7 @@ namespace DMMSTesting.IntegrationTests
         private IChromaDbService _chromaService = null!;
         private IImportAnalyzer _importAnalyzer = null!;
         private IImportExecutor _importExecutor = null!;
+        private ILegacyDbMigrator _legacyMigrator = null!;
         private PreviewImportTool _previewTool = null!;
         private ExecuteImportTool _executeTool = null!;
         private ISyncManagerV2 _syncManager = null!;
@@ -74,17 +75,19 @@ namespace DMMSTesting.IntegrationTests
             };
 
             // Create services
+            var legacyMigratorLogger = loggerFactory.CreateLogger<LegacyDbMigrator>();
             _externalReader = new ExternalChromaDbReader(readerLogger);
             _chromaService = CreateChromaService(serverConfig);
             _importAnalyzer = new ImportAnalyzer(_externalReader, _chromaService, analyzerLogger);
             _importExecutor = new ImportExecutor(_externalReader, _chromaService, _importAnalyzer, executorLogger);
+            _legacyMigrator = new LegacyDbMigrator(legacyMigratorLogger);
 
             // Create mock SyncManager for ExecuteImportTool (we won't test Dolt staging here)
             _syncManager = CreateMockSyncManager();
 
             // Create tools
-            _previewTool = new PreviewImportTool(previewToolLogger, _importAnalyzer, _externalReader);
-            _executeTool = new ExecuteImportTool(executeToolLogger, _importExecutor, _importAnalyzer, _externalReader, _syncManager);
+            _previewTool = new PreviewImportTool(previewToolLogger, _importAnalyzer, _externalReader, _legacyMigrator);
+            _executeTool = new ExecuteImportTool(executeToolLogger, _importExecutor, _importAnalyzer, _externalReader, _syncManager, _legacyMigrator);
 
             _logger.LogInformation("E2E Test setup complete - External: {External}, Local: {Local}",
                 _externalDbPath, _localDbPath);

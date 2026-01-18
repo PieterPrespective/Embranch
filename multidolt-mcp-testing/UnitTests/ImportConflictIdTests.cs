@@ -264,17 +264,32 @@ namespace DMMS.Testing.UnitTests
         }
 
         /// <summary>
-        /// Verifies that collection and ID conflicts don't include merge/custom
+        /// Verifies that collection mismatch conflicts don't include merge/custom
         /// </summary>
         [Test]
-        [TestCase(ImportConflictType.CollectionMismatch)]
-        [TestCase(ImportConflictType.IdCollision)]
-        public void GetResolutionOptions_StructuralConflicts_LimitedOptions(ImportConflictType type)
+        public void GetResolutionOptions_CollectionMismatch_LimitedOptions()
         {
-            var options = ImportUtility.GetResolutionOptions(type);
+            var options = ImportUtility.GetResolutionOptions(ImportConflictType.CollectionMismatch);
 
             Assert.That(options, Contains.Item("keep_source"));
             Assert.That(options, Contains.Item("keep_target"));
+            Assert.That(options, Contains.Item("skip"));
+            Assert.That(options, Does.Not.Contain("custom"));
+            Assert.That(options, Does.Not.Contain("merge"));
+        }
+
+        /// <summary>
+        /// Verifies that ID collision conflicts have cross-collection specific options
+        /// (namespace, keep_first, keep_last, skip)
+        /// </summary>
+        [Test]
+        public void GetResolutionOptions_IdCollision_CrossCollectionOptions()
+        {
+            var options = ImportUtility.GetResolutionOptions(ImportConflictType.IdCollision);
+
+            Assert.That(options, Contains.Item("namespace"));
+            Assert.That(options, Contains.Item("keep_first"));
+            Assert.That(options, Contains.Item("keep_last"));
             Assert.That(options, Contains.Item("skip"));
             Assert.That(options, Does.Not.Contain("custom"));
             Assert.That(options, Does.Not.Contain("merge"));
@@ -316,7 +331,7 @@ namespace DMMS.Testing.UnitTests
         [TestCase(ImportConflictType.ContentModification, "keep_source")]
         [TestCase(ImportConflictType.MetadataConflict, "keep_source")]
         [TestCase(ImportConflictType.CollectionMismatch, "keep_target")]
-        [TestCase(ImportConflictType.IdCollision, "skip")]
+        [TestCase(ImportConflictType.IdCollision, "namespace")]
         public void GetSuggestedResolution_ReturnsAppropriate(ImportConflictType type, string expected)
         {
             var suggestion = ImportUtility.GetSuggestedResolution(type);
