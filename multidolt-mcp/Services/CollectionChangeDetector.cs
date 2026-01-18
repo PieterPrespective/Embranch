@@ -4,6 +4,7 @@ using System.Linq;
 using System.Text.Json;
 using System.Threading.Tasks;
 using DMMS.Models;
+using DMMS.Utilities;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
@@ -345,8 +346,8 @@ namespace DMMS.Services
                     
                     if (row is System.Text.Json.JsonElement jsonElement)
                     {
-                        name = jsonElement.TryGetProperty("collection_name", out var nameProp) ? nameProp.GetString() ?? "" : "";
-                        metadataJson = jsonElement.TryGetProperty("metadata", out var metadataProp) ? metadataProp.GetString() ?? "{}" : "{}";
+                        name = JsonUtility.GetPropertyAsString(jsonElement, "collection_name", "");
+                        metadataJson = JsonUtility.GetPropertyAsString(jsonElement, "metadata", "{}");
                     }
                     else
                     {

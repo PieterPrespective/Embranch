@@ -5,6 +5,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Threading.Tasks;
 using DMMS.Models;
+using DMMS.Utilities;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
@@ -568,21 +569,21 @@ namespace DMMS.Services
                     
                     if (row is System.Text.Json.JsonElement jsonElement)
                     {
-                        docId = jsonElement.TryGetProperty("doc_id", out var docIdProp) ? docIdProp.GetString() ?? "" : "";
-                        contentHash = jsonElement.TryGetProperty("content_hash", out var contentHashProp) ? contentHashProp.GetString() ?? "" : "";
+                        docId = JsonUtility.GetPropertyAsString(jsonElement, "doc_id", "");
+                        contentHash = JsonUtility.GetPropertyAsString(jsonElement, "content_hash", "");
                     }
                     else
                     {
                         docId = (string)row.doc_id;
                         contentHash = (string)row.content_hash;
                     }
-                    
+
                     if (!string.IsNullOrEmpty(docId) && !string.IsNullOrEmpty(contentHash))
                     {
                         hashes[docId] = contentHash;
                     }
                 }
-                
+
                 return hashes;
             }
             catch (DoltException ex) when (ex.Message.Contains("table not found"))
@@ -621,16 +622,16 @@ namespace DMMS.Services
             {
                 var results = await _dolt.QueryAsync<dynamic>(sql);
                 var documents = new List<(string DocId, string ContentHash)>();
-                
+
                 foreach (var row in results)
                 {
                     // Handle both JsonElement and dynamic types
                     string docId, contentHash;
-                    
+
                     if (row is System.Text.Json.JsonElement jsonElement)
                     {
-                        docId = jsonElement.TryGetProperty("doc_id", out var docIdProp) ? docIdProp.GetString() ?? "" : "";
-                        contentHash = jsonElement.TryGetProperty("content_hash", out var contentHashProp) ? contentHashProp.GetString() ?? "" : "";
+                        docId = JsonUtility.GetPropertyAsString(jsonElement, "doc_id", "");
+                        contentHash = JsonUtility.GetPropertyAsString(jsonElement, "content_hash", "");
                     }
                     else
                     {
@@ -684,9 +685,9 @@ namespace DMMS.Services
                 
                 foreach (var row in results)
                 {
-                    if (row is System.Text.Json.JsonElement jsonElement && jsonElement.TryGetProperty("doc_id", out var docIdProp))
+                    if (row is System.Text.Json.JsonElement jsonElement)
                     {
-                        existingIds.Add(docIdProp.GetString() ?? "");
+                        existingIds.Add(JsonUtility.GetPropertyAsString(jsonElement, "doc_id", ""));
                     }
                     else
                     {
