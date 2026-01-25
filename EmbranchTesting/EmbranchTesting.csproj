@@ -32,7 +32,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\multidolt-mcp\Embranch.csproj" />
+    <ProjectReference Include="..\Embranch\Embranch.csproj" />
   </ItemGroup>
 
   <ItemGroup>
