@@ -218,6 +218,7 @@ public class ManifestModelsTests
     public void InitializationAction_AllValues_AreDefined()
     {
         // Arrange
+        // PP13-81: Added PendingConfiguration for empty repo handling
         var expectedValues = new[]
         {
             InitializationAction.None,
@@ -227,7 +228,8 @@ public class ManifestModelsTests
             InitializationAction.CheckedOutCommit,
             InitializationAction.SyncedExisting,
             InitializationAction.Skipped,
-            InitializationAction.Failed
+            InitializationAction.Failed,
+            InitializationAction.PendingConfiguration
         };
 
         // Act

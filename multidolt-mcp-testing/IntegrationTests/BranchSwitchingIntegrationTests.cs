@@ -96,7 +96,12 @@ namespace EmbranchTesting.IntegrationTests
             // Register sync services
             services.AddSingleton<ICollectionChangeDetector, CollectionChangeDetector>();
             services.AddSingleton<ISyncManagerV2, SyncManagerV2>();
-            
+
+            // PP13-82: Register manifest, git integration, and sync state checker services required by DoltCheckoutTool
+            services.AddSingleton<IEmbranchStateManifest, EmbranchStateManifest>();
+            services.AddSingleton<IGitIntegration, GitIntegration>();
+            services.AddSingleton<ISyncStateChecker, SyncStateChecker>();
+
             // Register tools
             services.AddTransient<DoltCheckoutTool>();
             
