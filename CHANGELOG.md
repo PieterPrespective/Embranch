@@ -2,6 +2,17 @@
 
 All notable changes to Embranch will be documented in this file.
 
+<a name="1.0.2"></a>
+## [1.0.2](https://www.github.com/PieterPrespective/Embranch/releases/tag/v1.0.2) (2026-01-29)
+
+### Bug Fixes
+
+* **bootstrap:** resolve fresh clone and sync issues (PP13-87-C2) ([7a152d1](https://www.github.com/PieterPrespective/Embranch/commit/7a152d1e318b7662e617b7c43ff49d6863ff8a7b))
+
+### Documentation
+
+* **changelog:** update historical entries and fix URLs ([fee49e5](https://www.github.com/PieterPrespective/Embranch/commit/fee49e56f612a43affc3591f3e93f3ee2e6969b3))
+
 <a name="1.0.1"></a>
 ## [1.0.1](https://www.github.com/PieterPrespective/Embranch/releases/tag/v1.0.1) (2026-01-26)
 
