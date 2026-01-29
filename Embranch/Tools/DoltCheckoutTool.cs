@@ -82,16 +82,18 @@ public class DoltCheckoutTool
                 };
             }
 
-            // Check if repository is initialized
+            // PP13-87: Check if repository is initialized with enhanced error guidance
             var isInitialized = await _doltCli.IsInitializedAsync();
             if (!isInitialized)
             {
-                ToolLoggingUtility.LogToolFailure(_logger, toolName, methodName, "No Dolt repository configured. Use dolt_init or dolt_clone first.");
+                ToolLoggingUtility.LogToolFailure(_logger, toolName, methodName, "No Dolt repository found. Call RepositoryStatus for detailed state analysis.");
                 return new
                 {
                     success = false,
                     error = "NOT_INITIALIZED",
-                    message = "No Dolt repository configured. Use dolt_init or dolt_clone first."
+                    message = "No Dolt repository found. Call RepositoryStatus to understand the current state and get actionable guidance. If a manifest exists, use BootstrapRepository to initialize from it.",
+                    suggested_action = "RepositoryStatus",
+                    available_actions = new[] { "RepositoryStatus", "BootstrapRepository", "DoltClone", "DoltInit" }
                 };
             }
 

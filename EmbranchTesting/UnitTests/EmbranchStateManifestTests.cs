@@ -47,6 +47,7 @@ public class EmbranchStateManifestTests
     }
 
     [Test]
+    [Description("PP13-87-C2: GetManifestPath returns .embranch path for new projects (no existing manifest)")]
     public void GetManifestPath_ReturnsCorrectPath()
     {
         // Arrange
@@ -55,22 +56,25 @@ public class EmbranchStateManifestTests
         // Act
         var result = _manifestService.GetManifestPath(projectPath);
 
-        // Assert
-        var expected = Path.Combine(projectPath, ".dmms", "state.json");
+        // Assert - PP13-87-C2: New projects use .embranch folder
+        var expected = Path.Combine(projectPath, ".embranch", "state.json");
         Assert.That(result, Is.EqualTo(expected));
     }
 
     [Test]
+    [Description("PP13-87-C2: GetDmmsDirectoryPath (obsolete) returns .embranch for new projects")]
     public void GetDmmsDirectoryPath_ReturnsCorrectPath()
     {
         // Arrange
         var projectPath = "/test/project";
 
         // Act
+        #pragma warning disable CS0618 // GetDmmsDirectoryPath is obsolete
         var result = _manifestService.GetDmmsDirectoryPath(projectPath);
+        #pragma warning restore CS0618
 
-        // Assert
-        var expected = Path.Combine(projectPath, ".dmms");
+        // Assert - PP13-87-C2: New projects use .embranch folder (backwards compatible)
+        var expected = Path.Combine(projectPath, ".embranch");
         Assert.That(result, Is.EqualTo(expected));
     }
 

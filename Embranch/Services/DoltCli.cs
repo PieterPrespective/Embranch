@@ -16,6 +16,7 @@ namespace Embranch.Services
     {
         private readonly string _doltPath;
         private readonly string _repositoryPath;
+        private string? _effectiveRepositoryPath;  // PP13-87-C1: Runtime override for actual repo location
         private readonly int _commandTimeout;
         private readonly bool _debugLogging;
         private readonly ILogger<DoltCli> _logger;
@@ -81,24 +82,70 @@ namespace Embranch.Services
             }
         }
 
+        // ==================== PP13-87-C1: Effective Path Methods ====================
+
+        /// <inheritdoc />
+        public void SetEffectiveRepositoryPath(string effectivePath)
+        {
+            var absolutePath = Path.GetFullPath(effectivePath);
+            _logger.LogInformation("[DoltCli.SetEffectiveRepositoryPath] Setting effective path to: {Path} (configured: {ConfiguredPath})",
+                absolutePath, _repositoryPath);
+            _effectiveRepositoryPath = absolutePath;
+        }
+
+        /// <inheritdoc />
+        /// <summary>
+        /// PP13-87-C2: Returns the effective repository path, ensuring it is always absolute.
+        /// This prevents rogue .dolt folders from being created at the process CWD when
+        /// relative paths are configured.
+        /// </summary>
+        public string GetEffectiveRepositoryPath()
+        {
+            var path = _effectiveRepositoryPath ?? _repositoryPath;
+
+            // PP13-87-C2: Ensure path is always absolute to prevent rogue .dolt creation
+            if (string.IsNullOrEmpty(path))
+            {
+                _logger.LogWarning("[DoltCli.GetEffectiveRepositoryPath] PP13-87-C2: Repository path is empty, using current directory");
+                return Directory.GetCurrentDirectory();
+            }
+
+            if (!Path.IsPathFullyQualified(path))
+            {
+                var absolutePath = Path.GetFullPath(path);
+                if (_debugLogging)
+                {
+                    _logger.LogDebug("[DoltCli.GetEffectiveRepositoryPath] PP13-87-C2: Resolved relative path '{RelativePath}' to '{AbsolutePath}'",
+                        path, absolutePath);
+                }
+                return absolutePath;
+            }
+
+            return path;
+        }
+
         // ==================== Core Execution Methods ====================
 
         /// <summary>
         /// Core command execution method. Handles process management, timeout, and error capture.
         /// Uses CliWrap for robust async process execution with proper cancellation support.
+        /// PP13-87-C1: Now uses effective path if set, otherwise configured path.
         /// </summary>
         private async Task<DoltCommandResult> ExecuteDoltCommandAsync(params string[] args)
         {
+            // PP13-87-C1: Use effective path if set, otherwise configured path
+            var workingDirectory = GetEffectiveRepositoryPath();
+
             if (_debugLogging)
             {
-                _logger.LogDebug("Executing: {DoltPath} {Args}", _doltPath, string.Join(" ", args));
+                _logger.LogDebug("Executing: {DoltPath} {Args} in {WorkingDir}", _doltPath, string.Join(" ", args), workingDirectory);
             }
-            
+
             try
             {
                 var result = await Cli.Wrap(_doltPath)
                     .WithArguments(args)
-                    .WithWorkingDirectory(_repositoryPath)
+                    .WithWorkingDirectory(workingDirectory)
                     .WithValidation(CommandResultValidation.None)
                     .ExecuteBufferedAsync(new CancellationTokenSource(_commandTimeout).Token);
 
@@ -193,12 +240,23 @@ namespace Embranch.Services
             }
         }
 
+        /// <summary>
+        /// PP13-87-C2: Check if a Dolt repository is initialized at the effective repository path.
+        /// Uses GetEffectiveRepositoryPath() to ensure consistent path resolution.
+        /// </summary>
         public async Task<bool> IsInitializedAsync()
         {
             try
             {
-                // Check if .dolt directory exists in the repository path
-                var doltDir = Path.Combine(_repositoryPath, ".dolt");
+                // PP13-87-C2: Use effective path for consistent path resolution
+                var effectivePath = GetEffectiveRepositoryPath();
+                var doltDir = Path.Combine(effectivePath, ".dolt");
+
+                if (_debugLogging)
+                {
+                    _logger.LogDebug("[DoltCli.IsInitializedAsync] Checking for .dolt at: {DoltDir}", doltDir);
+                }
+
                 if (!Directory.Exists(doltDir))
                 {
                     return false;
@@ -245,11 +303,17 @@ namespace Embranch.Services
             return result;
         }
 
-        public async Task<DoltCommandResult> CloneAsync(string remoteUrl, string? localPath = null)
+        /// <summary>
+        /// PP13-87-C2: Clones a Dolt repository from a remote URL.
+        /// Default localPath is "." to clone into current working directory,
+        /// preventing nested subfolder creation (e.g., repo-name/repo-name).
+        /// </summary>
+        /// <param name="remoteUrl">The remote URL to clone from (e.g., dolthub.com/org/repo)</param>
+        /// <param name="localPath">Target directory for clone. Defaults to "." (current directory)</param>
+        /// <returns>Result of the clone operation</returns>
+        public async Task<DoltCommandResult> CloneAsync(string remoteUrl, string localPath = ".")
         {
-            return localPath != null
-                ? await ExecuteDoltCommandAsync("clone", remoteUrl, localPath)
-                : await ExecuteDoltCommandAsync("clone", remoteUrl);
+            return await ExecuteDoltCommandAsync("clone", remoteUrl, localPath);
         }
 
         public async Task<RepositoryStatus> GetStatusAsync()

@@ -18,17 +18,23 @@ public class UpdateManifestTool
     private readonly IEmbranchStateManifest _manifestService;
     private readonly IDoltCli _doltCli;
     private readonly IGitIntegration _gitIntegration;
+    private readonly ISyncStateChecker _syncStateChecker;
 
+    /// <summary>
+    /// Initializes a new instance of the UpdateManifestTool class
+    /// </summary>
     public UpdateManifestTool(
         ILogger<UpdateManifestTool> logger,
         IEmbranchStateManifest manifestService,
         IDoltCli doltCli,
-        IGitIntegration gitIntegration)
+        IGitIntegration gitIntegration,
+        ISyncStateChecker syncStateChecker)
     {
         _logger = logger;
         _manifestService = manifestService;
         _doltCli = doltCli;
         _gitIntegration = gitIntegration;
+        _syncStateChecker = syncStateChecker;
     }
 
     /// <summary>
@@ -51,7 +57,7 @@ public class UpdateManifestTool
             ToolLoggingUtility.LogToolStart(_logger, toolName, methodName,
                 $"IncludeGitMapping: {include_git_mapping}, Note: {note ?? "none"}");
 
-            // Determine project root
+            // Determine project root - PP13-88: Use consistent resolution via ISyncStateChecker
             string resolvedProjectRoot;
             if (!string.IsNullOrEmpty(project_root))
             {
@@ -59,8 +65,18 @@ public class UpdateManifestTool
             }
             else
             {
-                var gitRoot = await _gitIntegration.GetGitRootAsync(Directory.GetCurrentDirectory());
-                resolvedProjectRoot = gitRoot ?? Directory.GetCurrentDirectory();
+                // PP13-88: First try ISyncStateChecker which respects EMBRANCH_PROJECT_ROOT
+                var checkerRoot = await _syncStateChecker.GetProjectRootAsync();
+                if (!string.IsNullOrEmpty(checkerRoot))
+                {
+                    resolvedProjectRoot = checkerRoot;
+                }
+                else
+                {
+                    // Fall back to Git root detection
+                    var gitRoot = await _gitIntegration.GetGitRootAsync(Directory.GetCurrentDirectory());
+                    resolvedProjectRoot = gitRoot ?? Directory.GetCurrentDirectory();
+                }
             }
 
             ToolLoggingUtility.LogToolInfo(_logger, toolName, $"Using project root: {resolvedProjectRoot}");

@@ -4,15 +4,17 @@ namespace Embranch.Services;
 
 /// <summary>
 /// PP13-79: Interface for Embranch state manifest operations.
-/// Manages reading, writing, and updating the .dmms/state.json file
-/// that tracks Dolt repository state and Git-Dolt commit mappings.
+/// Manages reading, writing, and updating the .embranch/state.json file
+/// (or legacy .dmms/state.json for backwards compatibility) that tracks
+/// Dolt repository state and Git-Dolt commit mappings.
+/// PP13-87-C2: Added support for .embranch folder name with .dmms backwards compatibility.
 /// </summary>
 public interface IEmbranchStateManifest
 {
     /// <summary>
     /// Reads the state manifest from the project directory
     /// </summary>
-    /// <param name="projectPath">Path to the project root (containing .dmms folder)</param>
+    /// <param name="projectPath">Path to the project root (containing .embranch or .dmms folder)</param>
     /// <returns>The manifest if found and valid, null otherwise</returns>
     Task<DmmsManifest?> ReadManifestAsync(string projectPath);
 
@@ -27,7 +29,7 @@ public interface IEmbranchStateManifest
     /// Checks if a manifest exists in the project
     /// </summary>
     /// <param name="projectPath">Path to the project root</param>
-    /// <returns>True if .dmms/state.json exists</returns>
+    /// <returns>True if .embranch/state.json or .dmms/state.json exists</returns>
     Task<bool> ManifestExistsAsync(string projectPath);
 
     /// <summary>
@@ -49,18 +51,40 @@ public interface IEmbranchStateManifest
     Task RecordGitMappingAsync(string projectPath, string gitCommit, string doltCommit);
 
     /// <summary>
-    /// Gets the manifest file path for a project
+    /// Gets the manifest file path for a project.
+    /// PP13-87-C2: Checks .embranch first, then .dmms for backwards compatibility.
     /// </summary>
     /// <param name="projectPath">Path to the project root</param>
-    /// <returns>Full path to .dmms/state.json</returns>
+    /// <returns>Full path to .embranch/state.json or .dmms/state.json</returns>
     string GetManifestPath(string projectPath);
 
     /// <summary>
-    /// Gets the .dmms directory path for a project
+    /// PP13-87-C2: Gets the manifest directory path for a project.
+    /// Checks .embranch first, then .dmms for backwards compatibility.
     /// </summary>
     /// <param name="projectPath">Path to the project root</param>
-    /// <returns>Full path to .dmms directory</returns>
+    /// <returns>Full path to .embranch or .dmms directory</returns>
+    string GetManifestDirectoryPath(string projectPath);
+
+    /// <summary>
+    /// Gets the manifest directory path for a project.
+    /// </summary>
+    /// <param name="projectPath">Path to the project root</param>
+    /// <returns>Full path to manifest directory</returns>
+    [Obsolete("Use GetManifestDirectoryPath instead. This method is kept for backwards compatibility.")]
     string GetDmmsDirectoryPath(string projectPath);
+
+    /// <summary>
+    /// PP13-87-C1/C2: Searches for manifest in standard locations.
+    /// Searches in order (checking .embranch first, then .dmms at each location):
+    /// 1. {projectRoot}/.embranch/state.json, then {projectRoot}/.dmms/state.json
+    /// 2. {dataPath}/../.embranch/state.json, then {dataPath}/../.dmms/state.json
+    /// 3. {projectRoot}/mcpdata/*/.embranch/state.json, then .dmms/state.json
+    /// </summary>
+    /// <param name="projectPath">Path to the project root</param>
+    /// <param name="dataPath">Optional data path from configuration (EMBRANCH_DATA_PATH)</param>
+    /// <returns>Tuple of (found, manifestPath, searchedLocations)</returns>
+    Task<(bool Found, string? ManifestPath, string[] SearchedLocations)> FindManifestAsync(string projectPath, string? dataPath = null);
 
     /// <summary>
     /// Validates a manifest structure

@@ -144,7 +144,7 @@ public class ChromaDoltSyncIntegrationTests
         _logger!.LogInformation("📥 Setting up input ChromaDB from test data...");
 
         // Extract the test database
-        var zipPath = Path.Combine(_solutionRoot, "multidolt-mcp-testing", "TestData", "out-of-date-chroma-database.zip");
+        var zipPath = Path.Combine(_solutionRoot, "EmbranchTesting", "TestData", "out-of-date-chroma-database.zip");
         
         if (!File.Exists(zipPath))
         {
@@ -199,7 +199,7 @@ public class ChromaDoltSyncIntegrationTests
         _logger.LogInformation("Dolt repository initialized at: {RepoPath}", _doltRepoPath);
 
         // Create database schema for sync operations
-        var schemaPath = Path.Combine(_solutionRoot, "multidolt-mcp", "Models", "SyncDatabaseSchema.sql");
+        var schemaPath = Path.Combine(_solutionRoot, "Embranch", "Models", "SyncDatabaseSchema.sql");
         if (File.Exists(schemaPath))
         {
             var schemaContent = await File.ReadAllTextAsync(schemaPath);

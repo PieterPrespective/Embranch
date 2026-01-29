@@ -84,9 +84,9 @@ public class DoltPushTool
             var targetRemote = remotes?.FirstOrDefault(r => r.Name == remote);
             if (targetRemote == null)
             {
-                // Enhanced error reporting with diagnostic information
+                // PP13-88: Enhanced error reporting with suggested action
                 var availableRemotes = remotes?.Select(r => r.Name).ToList() ?? new List<string>();
-                var diagnosticMessage = availableRemotes.Any() 
+                var diagnosticMessage = availableRemotes.Any()
                     ? $"Remote '{remote}' not found. Available remotes: {string.Join(", ", availableRemotes)}"
                     : $"Remote '{remote}' not found. No remotes are currently configured.";
 
@@ -98,7 +98,14 @@ public class DoltPushTool
                     success = false,
                     error = error,
                     message = diagnosticMessage,
-                    availableRemotes = availableRemotes
+                    availableRemotes = availableRemotes,
+                    suggested_action = $"Use DoltRemote(action='add', name='{remote}', url='...') to configure a remote, " +
+                        "or ManifestSetRemote(remote_url='...', configure_dolt_remote=true) to set both manifest and Dolt remote.",
+                    available_actions = new[]
+                    {
+                        $"DoltRemote(action='add', name='{remote}', url='dolthub.com/username/repo') - Add remote directly",
+                        "ManifestSetRemote(remote_url='...', configure_dolt_remote=true) - Set manifest and Dolt remote together"
+                    }
                 };
             }
 

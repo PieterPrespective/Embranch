@@ -7,13 +7,20 @@ namespace Embranch.Services;
 
 /// <summary>
 /// PP13-79: Implementation of Embranch state manifest operations.
-/// Manages the .dmms/state.json file that tracks Dolt repository state
-/// and Git-Dolt commit mappings for project synchronization.
+/// Manages the .embranch/state.json (or legacy .dmms/state.json) file that tracks
+/// Dolt repository state and Git-Dolt commit mappings for project synchronization.
+/// PP13-87-C2: Added support for .embranch folder name with .dmms backwards compatibility.
 /// </summary>
 public class EmbranchStateManifest : IEmbranchStateManifest
 {
     private readonly ILogger<EmbranchStateManifest> _logger;
-    private const string DmmsDirectoryName = ".dmms";
+
+    /// <summary>PP13-87-C2: New manifest directory name for new setups</summary>
+    private const string EmbranchDirectoryName = ".embranch";
+
+    /// <summary>PP13-87-C2: Legacy manifest directory name for backwards compatibility</summary>
+    private const string LegacyDmmsDirectoryName = ".dmms";
+
     private const string ManifestFileName = "state.json";
 
     private static readonly JsonSerializerOptions JsonOptions = new()
@@ -34,11 +41,13 @@ public class EmbranchStateManifest : IEmbranchStateManifest
     {
         try
         {
-            var manifestPath = GetManifestPath(projectPath);
+            // PP13-87-C1: Use FindManifestAsync to search multiple locations
+            var (found, manifestPath, searchedLocations) = await FindManifestAsync(projectPath);
 
-            if (!File.Exists(manifestPath))
+            if (!found || manifestPath == null)
             {
-                _logger.LogDebug("[EmbranchStateManifest.ReadManifestAsync] Manifest not found at: {Path}", manifestPath);
+                _logger.LogDebug("[EmbranchStateManifest.ReadManifestAsync] Manifest not found. Searched: {Locations}",
+                    string.Join(", ", searchedLocations));
                 return null;
             }
 
@@ -69,14 +78,12 @@ public class EmbranchStateManifest : IEmbranchStateManifest
         }
         catch (JsonException ex)
         {
-            _logger.LogWarning(ex, "[EmbranchStateManifest.ReadManifestAsync] JSON parse error reading manifest at: {Path}",
-                GetManifestPath(projectPath));
+            _logger.LogWarning(ex, "[EmbranchStateManifest.ReadManifestAsync] JSON parse error reading manifest");
             return null;
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "[EmbranchStateManifest.ReadManifestAsync] Error reading manifest from: {Path}",
-                GetManifestPath(projectPath));
+            _logger.LogError(ex, "[EmbranchStateManifest.ReadManifestAsync] Error reading manifest");
             return null;
         }
     }
@@ -86,14 +93,16 @@ public class EmbranchStateManifest : IEmbranchStateManifest
     {
         try
         {
-            var dmmsDir = GetDmmsDirectoryPath(projectPath);
-            var manifestPath = GetManifestPath(projectPath);
+            // PP13-87-C2: Determine which directory to use
+            // If an existing manifest is in .dmms, continue using it (don't migrate)
+            // For new manifests, use .embranch
+            var (manifestDir, manifestPath) = GetWriteManifestPaths(projectPath);
 
-            // Ensure .dmms directory exists
-            if (!Directory.Exists(dmmsDir))
+            // Ensure manifest directory exists
+            if (!Directory.Exists(manifestDir))
             {
-                Directory.CreateDirectory(dmmsDir);
-                _logger.LogDebug("[EmbranchStateManifest.WriteManifestAsync] Created .dmms directory at: {Path}", dmmsDir);
+                Directory.CreateDirectory(manifestDir);
+                _logger.LogDebug("[EmbranchStateManifest.WriteManifestAsync] Created manifest directory at: {Path}", manifestDir);
             }
 
             // Update timestamp
@@ -113,12 +122,13 @@ public class EmbranchStateManifest : IEmbranchStateManifest
     }
 
     /// <inheritdoc />
-    public Task<bool> ManifestExistsAsync(string projectPath)
+    public async Task<bool> ManifestExistsAsync(string projectPath)
     {
-        var manifestPath = GetManifestPath(projectPath);
-        var exists = File.Exists(manifestPath);
-        _logger.LogDebug("[EmbranchStateManifest.ManifestExistsAsync] Manifest exists check at {Path}: {Exists}", manifestPath, exists);
-        return Task.FromResult(exists);
+        // PP13-87-C1: Use FindManifestAsync to search multiple locations
+        var (found, manifestPath, _) = await FindManifestAsync(projectPath);
+        _logger.LogDebug("[EmbranchStateManifest.ManifestExistsAsync] Manifest exists check for {ProjectPath}: {Exists}, Path: {Path}",
+            projectPath, found, manifestPath ?? "not found");
+        return found;
     }
 
     /// <inheritdoc />
@@ -205,13 +215,167 @@ public class EmbranchStateManifest : IEmbranchStateManifest
     /// <inheritdoc />
     public string GetManifestPath(string projectPath)
     {
-        return Path.Combine(projectPath, DmmsDirectoryName, ManifestFileName);
+        // PP13-87-C2: Check .embranch first, then .dmms for backwards compatibility
+        var embranchPath = Path.Combine(projectPath, EmbranchDirectoryName, ManifestFileName);
+        if (File.Exists(embranchPath))
+        {
+            return embranchPath;
+        }
+
+        var legacyPath = Path.Combine(projectPath, LegacyDmmsDirectoryName, ManifestFileName);
+        if (File.Exists(legacyPath))
+        {
+            return legacyPath;
+        }
+
+        // Default to new .embranch location for new manifests
+        return embranchPath;
     }
 
     /// <inheritdoc />
+    public string GetManifestDirectoryPath(string projectPath)
+    {
+        // PP13-87-C2: Check .embranch first, then .dmms for backwards compatibility
+        var embranchDir = Path.Combine(projectPath, EmbranchDirectoryName);
+        if (Directory.Exists(embranchDir))
+        {
+            return embranchDir;
+        }
+
+        var legacyDir = Path.Combine(projectPath, LegacyDmmsDirectoryName);
+        if (Directory.Exists(legacyDir))
+        {
+            return legacyDir;
+        }
+
+        // Default to new .embranch location for new setups
+        return embranchDir;
+    }
+
+    /// <inheritdoc />
+    [Obsolete("Use GetManifestDirectoryPath instead. This method is kept for backwards compatibility.")]
     public string GetDmmsDirectoryPath(string projectPath)
     {
-        return Path.Combine(projectPath, DmmsDirectoryName);
+        return GetManifestDirectoryPath(projectPath);
+    }
+
+    /// <summary>
+    /// PP13-87-C2: Gets the write paths for manifest, preferring existing location.
+    /// If manifest already exists in .dmms, continue using it.
+    /// For new manifests, use .embranch.
+    /// </summary>
+    private (string Directory, string ManifestPath) GetWriteManifestPaths(string projectPath)
+    {
+        // Check if existing manifest is in legacy .dmms location
+        var legacyDir = Path.Combine(projectPath, LegacyDmmsDirectoryName);
+        var legacyManifest = Path.Combine(legacyDir, ManifestFileName);
+        if (File.Exists(legacyManifest))
+        {
+            _logger.LogDebug("[EmbranchStateManifest] Using existing legacy .dmms location for manifest");
+            return (legacyDir, legacyManifest);
+        }
+
+        // Check if .embranch already exists (even without manifest)
+        var embranchDir = Path.Combine(projectPath, EmbranchDirectoryName);
+        var embranchManifest = Path.Combine(embranchDir, ManifestFileName);
+        if (Directory.Exists(embranchDir))
+        {
+            return (embranchDir, embranchManifest);
+        }
+
+        // New setup: use .embranch
+        _logger.LogDebug("[EmbranchStateManifest] Using new .embranch location for manifest");
+        return (embranchDir, embranchManifest);
+    }
+
+    /// <inheritdoc />
+    public Task<(bool Found, string? ManifestPath, string[] SearchedLocations)> FindManifestAsync(string projectPath, string? dataPath = null)
+    {
+        var searchedLocations = new List<string>();
+
+        try
+        {
+            // PP13-87-C2: Search order (at each location, check .embranch first, then .dmms):
+            // 1. Standard location: {projectRoot}/.embranch/state.json, then {projectRoot}/.dmms/state.json
+            var standardEmbranchPath = Path.Combine(projectPath, EmbranchDirectoryName, ManifestFileName);
+            var standardLegacyPath = Path.Combine(projectPath, LegacyDmmsDirectoryName, ManifestFileName);
+            searchedLocations.Add(standardEmbranchPath);
+            searchedLocations.Add(standardLegacyPath);
+
+            if (File.Exists(standardEmbranchPath))
+            {
+                _logger.LogDebug("[EmbranchStateManifest.FindManifestAsync] Found manifest at standard .embranch location: {Path}", standardEmbranchPath);
+                return Task.FromResult((true, (string?)standardEmbranchPath, searchedLocations.ToArray()));
+            }
+
+            if (File.Exists(standardLegacyPath))
+            {
+                _logger.LogDebug("[EmbranchStateManifest.FindManifestAsync] Found manifest at legacy .dmms location: {Path}", standardLegacyPath);
+                return Task.FromResult((true, (string?)standardLegacyPath, searchedLocations.ToArray()));
+            }
+
+            // 2. Relative to EMBRANCH_DATA_PATH: {dataPath}/../.embranch/state.json or .dmms/state.json
+            // PP13-87-C1: Use EMBRANCH_DATA_PATH to find server instance manifest
+            // e.g., if DataPath is "./mcpdata/PSKD/data", manifest is at "./mcpdata/PSKD/.embranch/state.json"
+            if (!string.IsNullOrEmpty(dataPath))
+            {
+                var absoluteDataPath = Path.GetFullPath(dataPath);
+                // Navigate up from data path: data -> PSKD (server instance root)
+                var serverInstanceRoot = Path.GetDirectoryName(absoluteDataPath);
+                if (!string.IsNullOrEmpty(serverInstanceRoot))
+                {
+                    var dataRelativeEmbranchPath = Path.Combine(serverInstanceRoot, EmbranchDirectoryName, ManifestFileName);
+                    var dataRelativeLegacyPath = Path.Combine(serverInstanceRoot, LegacyDmmsDirectoryName, ManifestFileName);
+                    searchedLocations.Add(dataRelativeEmbranchPath);
+                    searchedLocations.Add(dataRelativeLegacyPath);
+
+                    if (File.Exists(dataRelativeEmbranchPath))
+                    {
+                        _logger.LogInformation("[EmbranchStateManifest.FindManifestAsync] Found manifest relative to EMBRANCH_DATA_PATH (.embranch): {Path}", dataRelativeEmbranchPath);
+                        return Task.FromResult((true, (string?)dataRelativeEmbranchPath, searchedLocations.ToArray()));
+                    }
+
+                    if (File.Exists(dataRelativeLegacyPath))
+                    {
+                        _logger.LogInformation("[EmbranchStateManifest.FindManifestAsync] Found manifest relative to EMBRANCH_DATA_PATH (.dmms): {Path}", dataRelativeLegacyPath);
+                        return Task.FromResult((true, (string?)dataRelativeLegacyPath, searchedLocations.ToArray()));
+                    }
+                }
+            }
+
+            // 3. Fallback: Server instance locations: {projectRoot}/mcpdata/*/.embranch/state.json or .dmms/state.json
+            var mcpdataPath = Path.Combine(projectPath, "mcpdata");
+            if (Directory.Exists(mcpdataPath))
+            {
+                foreach (var serverDir in Directory.GetDirectories(mcpdataPath))
+                {
+                    var serverEmbranchPath = Path.Combine(serverDir, EmbranchDirectoryName, ManifestFileName);
+                    var serverLegacyPath = Path.Combine(serverDir, LegacyDmmsDirectoryName, ManifestFileName);
+                    searchedLocations.Add(serverEmbranchPath);
+                    searchedLocations.Add(serverLegacyPath);
+
+                    if (File.Exists(serverEmbranchPath))
+                    {
+                        _logger.LogInformation("[EmbranchStateManifest.FindManifestAsync] Found manifest at server instance location (.embranch): {Path}", serverEmbranchPath);
+                        return Task.FromResult((true, (string?)serverEmbranchPath, searchedLocations.ToArray()));
+                    }
+
+                    if (File.Exists(serverLegacyPath))
+                    {
+                        _logger.LogInformation("[EmbranchStateManifest.FindManifestAsync] Found manifest at server instance location (.dmms): {Path}", serverLegacyPath);
+                        return Task.FromResult((true, (string?)serverLegacyPath, searchedLocations.ToArray()));
+                    }
+                }
+            }
+
+            _logger.LogDebug("[EmbranchStateManifest.FindManifestAsync] No manifest found. Searched: {Locations}", string.Join(", ", searchedLocations));
+            return Task.FromResult((false, (string?)null, searchedLocations.ToArray()));
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "[EmbranchStateManifest.FindManifestAsync] Error searching for manifest");
+            return Task.FromResult((false, (string?)null, searchedLocations.ToArray()));
+        }
     }
 
     /// <inheritdoc />

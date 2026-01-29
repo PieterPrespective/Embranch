@@ -9,6 +9,7 @@ namespace Embranch.Tools;
 
 /// <summary>
 /// PP13-81: MCP tool to update the remote URL in the Embranch manifest.
+/// PP13-88: Enhanced to optionally configure the Dolt remote as well.
 /// Allows configuration of remote repository without requiring restart.
 /// This enables recovery from the empty repository initialization scenario.
 /// </summary>
@@ -19,6 +20,7 @@ public class ManifestSetRemoteTool
     private readonly IEmbranchStateManifest _manifestService;
     private readonly ISyncStateChecker _syncStateChecker;
     private readonly IGitIntegration _gitIntegration;
+    private readonly IDoltCli _doltCli;
 
     /// <summary>
     /// Initializes a new instance of the ManifestSetRemoteTool class
@@ -27,28 +29,39 @@ public class ManifestSetRemoteTool
         ILogger<ManifestSetRemoteTool> logger,
         IEmbranchStateManifest manifestService,
         ISyncStateChecker syncStateChecker,
-        IGitIntegration gitIntegration)
+        IGitIntegration gitIntegration,
+        IDoltCli doltCli)
     {
         _logger = logger;
         _manifestService = manifestService;
         _syncStateChecker = syncStateChecker;
         _gitIntegration = gitIntegration;
+        _doltCli = doltCli;
     }
 
     /// <summary>
-    /// Update the remote URL in the Embranch manifest. After setting, use DoltClone to clone from the remote.
+    /// Update the remote URL in the Embranch manifest. Optionally also configure the Dolt remote.
+    /// After setting, use DoltClone or DoltPush to interact with the remote.
     /// This tool enables recovery when Embranch started without a configured remote URL.
     /// </summary>
+    /// <param name="remote_url">The remote repository URL (e.g., "dolthub.com/username/repo")</param>
+    /// <param name="default_branch">Default branch name (defaults to "main")</param>
+    /// <param name="project_root">Optional project root path override</param>
+    /// <param name="configure_dolt_remote">PP13-88: If true, also add the remote to the Dolt repository</param>
+    /// <param name="remote_name">PP13-88: Name for the Dolt remote (defaults to "origin")</param>
     [McpServerTool]
-    [Description("Update the remote URL in the Embranch manifest. After setting, use DoltClone (with force=true if needed) to clone from the remote. This enables configuration of remote repository after initial startup.")]
+    [Description("Update the remote URL in the Embranch manifest. Set configure_dolt_remote=true to also add the remote to the Dolt repository. After setting, use DoltClone or DoltPush to interact with the remote.")]
     public virtual async Task<object> ManifestSetRemote(
         string remote_url,
         string? default_branch = null,
-        string? project_root = null)
+        string? project_root = null,
+        bool configure_dolt_remote = false,
+        string remote_name = "origin")
     {
         const string toolName = nameof(ManifestSetRemoteTool);
         const string methodName = nameof(ManifestSetRemote);
-        ToolLoggingUtility.LogToolStart(_logger, toolName, methodName, $"remote_url: {remote_url}, default_branch: {default_branch}");
+        ToolLoggingUtility.LogToolStart(_logger, toolName, methodName,
+            $"remote_url: {remote_url}, default_branch: {default_branch}, configure_dolt_remote: {configure_dolt_remote}, remote_name: {remote_name}");
 
         try
         {
@@ -139,13 +152,78 @@ public class ManifestSetRemoteTool
 
             var manifestPath = _manifestService.GetManifestPath(resolvedProjectRoot);
 
+            // PP13-88: Optionally configure Dolt remote as well
+            bool doltRemoteConfigured = false;
+            string? doltRemoteWarning = null;
+            bool doltRemoteAlreadyExists = false;
+
+            if (configure_dolt_remote)
+            {
+                var isDoltInitialized = await _doltCli.IsInitializedAsync();
+                if (isDoltInitialized)
+                {
+                    // Check if remote already exists
+                    var existingRemotes = await _doltCli.ListRemotesAsync();
+                    var existingRemote = existingRemotes?.FirstOrDefault(r =>
+                        r.Name.Equals(remote_name, StringComparison.OrdinalIgnoreCase));
+
+                    if (existingRemote != null)
+                    {
+                        doltRemoteAlreadyExists = true;
+                        doltRemoteWarning = $"Dolt remote '{remote_name}' already exists with URL: {existingRemote.Url}. " +
+                            $"Use DoltRemote(action='remove', name='{remote_name}') first to replace it.";
+                        ToolLoggingUtility.LogToolWarning(_logger, toolName, doltRemoteWarning);
+                    }
+                    else
+                    {
+                        // Add the Dolt remote
+                        var addResult = await _doltCli.AddRemoteAsync(remote_name, remote_url);
+                        if (addResult.Success)
+                        {
+                            doltRemoteConfigured = true;
+                            ToolLoggingUtility.LogToolInfo(_logger, toolName,
+                                $"Added Dolt remote '{remote_name}' with URL: {remote_url}");
+                        }
+                        else
+                        {
+                            doltRemoteWarning = $"Failed to add Dolt remote: {addResult.Error ?? addResult.Output}";
+                            ToolLoggingUtility.LogToolWarning(_logger, toolName, doltRemoteWarning);
+                        }
+                    }
+                }
+                else
+                {
+                    doltRemoteWarning = "Dolt repository not initialized. Manifest updated, but Dolt remote not configured. " +
+                        "Use DoltInit or DoltClone first, then call DoltRemote(action='add') to add the remote.";
+                    ToolLoggingUtility.LogToolWarning(_logger, toolName, doltRemoteWarning);
+                }
+            }
+
             ToolLoggingUtility.LogToolSuccess(_logger, toolName, methodName,
-                $"Remote URL set to: {remote_url}");
+                $"Remote URL set to: {remote_url}" + (doltRemoteConfigured ? $", Dolt remote '{remote_name}' also configured" : ""));
+
+            // Build next_steps based on current state
+            var nextSteps = new List<string>();
+            if (doltRemoteConfigured)
+            {
+                nextSteps.Add($"Use DoltPush(remote='{remote_name}') to push commits to the remote");
+                nextSteps.Add($"Use DoltPull(remote='{remote_name}') to pull changes from the remote");
+            }
+            else if (doltRemoteAlreadyExists)
+            {
+                nextSteps.Add($"Use DoltRemote(action='remove', name='{remote_name}') to remove existing remote first");
+                nextSteps.Add("Then call ManifestSetRemote again with configure_dolt_remote=true");
+            }
+            else
+            {
+                nextSteps.Add("Use DoltClone to clone from the configured remote");
+                nextSteps.Add("If a local repository already exists, use DoltClone with force=true to overwrite it");
+            }
 
             return new
             {
                 success = true,
-                message = $"Remote URL updated to: {remote_url}",
+                message = $"Remote URL updated to: {remote_url}" + (doltRemoteConfigured ? $" (Dolt remote '{remote_name}' also configured)" : ""),
                 manifest = new
                 {
                     path = manifestPath,
@@ -154,11 +232,14 @@ public class ManifestSetRemoteTool
                     previous_remote_url = previousRemoteUrl,
                     updated_at = updatedManifest.UpdatedAt.ToString("O")
                 },
-                next_steps = new[]
+                dolt_remote = new
                 {
-                    "Use DoltClone to clone from the configured remote",
-                    "If a local repository already exists, use DoltClone with force=true to overwrite it"
-                }
+                    configured = doltRemoteConfigured,
+                    name = configure_dolt_remote ? remote_name : (string?)null,
+                    already_exists = doltRemoteAlreadyExists,
+                    warning = doltRemoteWarning
+                },
+                next_steps = nextSteps.ToArray()
             };
         }
         catch (Exception ex)

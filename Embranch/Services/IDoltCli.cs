@@ -8,7 +8,22 @@ namespace Embranch.Services
     public interface IDoltCli
     {
         // ==================== Repository Management ====================
-        
+
+        /// <summary>
+        /// PP13-87-C1: Sets the effective repository path for Dolt operations.
+        /// Use this when the actual repository location differs from the configured path
+        /// (e.g., nested directory from CLI clone). All subsequent Dolt commands will use
+        /// this effective path as the working directory.
+        /// </summary>
+        /// <param name="effectivePath">The actual path where the .dolt directory is located</param>
+        void SetEffectiveRepositoryPath(string effectivePath);
+
+        /// <summary>
+        /// PP13-87-C1: Gets the current effective repository path.
+        /// Returns the effective path if set, otherwise the configured path.
+        /// </summary>
+        string GetEffectiveRepositoryPath();
+
         /// <summary>
         /// Check if the Dolt executable is available and accessible
         /// </summary>
@@ -28,12 +43,14 @@ namespace Embranch.Services
         Task<DoltCommandResult> InitAsync();
         
         /// <summary>
-        /// Clone a repository from a remote URL (typically DoltHub)
+        /// PP13-87-C2: Clone a repository from a remote URL (typically DoltHub).
+        /// Default localPath is "." to clone into current working directory,
+        /// preventing nested subfolder creation (e.g., repo-name/repo-name).
         /// </summary>
         /// <param name="remoteUrl">The remote repository URL (e.g., "dolthub.com/username/repo")</param>
-        /// <param name="localPath">Optional local directory name. If null, uses remote repo name</param>
+        /// <param name="localPath">Target directory for clone. Defaults to "." (current directory)</param>
         /// <returns>Command result indicating success/failure of the clone operation</returns>
-        Task<DoltCommandResult> CloneAsync(string remoteUrl, string? localPath = null);
+        Task<DoltCommandResult> CloneAsync(string remoteUrl, string localPath = ".");
         
         /// <summary>
         /// Get the current status of the repository including staged and unstaged changes

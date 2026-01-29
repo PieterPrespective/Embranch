@@ -111,6 +111,10 @@ builder.Services.AddSingleton<IEmbranchInitializer, EmbranchInitializer>();
 // PP13-79-C1: Register sync state checker for manifest synchronization
 builder.Services.AddSingleton<ISyncStateChecker, SyncStateChecker>();
 
+// PP13-87: Register repository state detection and bootstrap services
+builder.Services.AddSingleton<IRepositoryStateDetector, RepositoryStateDetector>();
+builder.Services.AddSingleton<IRepositoryBootstrapper, RepositoryBootstrapper>();
+
 builder.Services
     .AddMcpServer()
     .WithStdioServerTransport()
@@ -168,7 +172,14 @@ builder.Services
     .WithTools<SyncToManifestTool>()
 
     // PP13-81: Manifest Remote Configuration Tool
-    .WithTools<ManifestSetRemoteTool>();
+    .WithTools<ManifestSetRemoteTool>()
+
+    // PP13-87: Repository Status and Bootstrap Tools
+    .WithTools<RepositoryStatusTool>()
+    .WithTools<BootstrapRepositoryTool>()
+
+    // PP13-88: Remote Configuration Tool
+    .WithTools<DoltRemoteTool>();
 
 var host = builder.Build();
 
@@ -566,6 +577,48 @@ if (doltConfig.UseManifest)
                         else
                         {
                             logger?.LogWarning("PP13-79-C1: ⚠ Initialization failed: {Error}. Continuing with local state.", result.ErrorMessage);
+                        }
+                    }
+                }
+                else
+                {
+                    // PP13-87-C1: Even when Dolt state matches manifest (NeedsInitialization=false),
+                    // we still need to sync Chroma on first run with auto-created manifest.
+                    // This handles the case where Dolt data exists but Chroma is empty.
+                    var doltCli = host.Services.GetRequiredService<IDoltCli>();
+                    var doltInitialized = await doltCli.IsInitializedAsync();
+
+                    if (doltInitialized)
+                    {
+                        if (enableLogging)
+                        {
+                            var logger = host.Services.GetService<ILogger<Program>>();
+                            logger?.LogInformation("PP13-87-C1: Dolt state matches auto-created manifest. Syncing Chroma to ensure consistency...");
+                        }
+
+                        var syncManager = host.Services.GetRequiredService<ISyncManagerV2>();
+                        var syncResult = await syncManager.FullSyncAsync(collectionName: null, forceSync: true);
+
+                        if (enableLogging)
+                        {
+                            var logger = host.Services.GetService<ILogger<Program>>();
+                            if (syncResult.Success)
+                            {
+                                logger?.LogInformation("PP13-87-C1: ✓ Chroma synced successfully. Collections synced: {Count}", syncResult.TotalChanges);
+
+                                // Update manifest with current Dolt commit
+                                var currentCommit = await doltCli.GetHeadCommitHashAsync();
+                                var currentBranch = await doltCli.GetCurrentBranchAsync();
+                                if (!string.IsNullOrEmpty(currentCommit))
+                                {
+                                    await manifestService.UpdateDoltCommitAsync(projectRoot, currentCommit, currentBranch ?? "main");
+                                    logger?.LogInformation("PP13-87-C1: Updated manifest with current commit: {Commit}", currentCommit?.Substring(0, Math.Min(7, currentCommit?.Length ?? 0)));
+                                }
+                            }
+                            else
+                            {
+                                logger?.LogWarning("PP13-87-C1: ⚠ Chroma sync warning: {Error}", syncResult.ErrorMessage);
+                            }
                         }
                     }
                 }

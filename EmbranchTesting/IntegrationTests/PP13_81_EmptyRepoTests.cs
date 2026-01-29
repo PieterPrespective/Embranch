@@ -320,7 +320,8 @@ public class PP13_81_EmptyRepoTests
             toolLoggerMock.Object,
             _manifestMock.Object,
             _syncStateCheckerMock.Object,
-            _gitIntegrationMock.Object
+            _gitIntegrationMock.Object,
+            _doltCliMock.Object
         );
 
         // Act
@@ -350,7 +351,8 @@ public class PP13_81_EmptyRepoTests
             toolLoggerMock.Object,
             _manifestMock.Object,
             _syncStateCheckerMock.Object,
-            _gitIntegrationMock.Object
+            _gitIntegrationMock.Object,
+            _doltCliMock.Object
         );
 
         // Act
@@ -396,7 +398,8 @@ public class PP13_81_EmptyRepoTests
             toolLoggerMock.Object,
             _manifestMock.Object,
             _syncStateCheckerMock.Object,
-            _gitIntegrationMock.Object
+            _gitIntegrationMock.Object,
+            _doltCliMock.Object
         );
 
         // Act
@@ -444,7 +447,8 @@ public class PP13_81_EmptyRepoTests
             toolLoggerMock.Object,
             _manifestMock.Object,
             _syncStateCheckerMock.Object,
-            _gitIntegrationMock.Object
+            _gitIntegrationMock.Object,
+            _doltCliMock.Object
         );
 
         // Act
@@ -487,7 +491,8 @@ public class PP13_81_EmptyRepoTests
             toolLoggerMock.Object,
             _manifestMock.Object,
             _syncStateCheckerMock.Object,
-            _gitIntegrationMock.Object
+            _gitIntegrationMock.Object,
+            _doltCliMock.Object
         );
 
         // Act
