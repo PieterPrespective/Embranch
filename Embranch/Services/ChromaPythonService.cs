@@ -147,7 +147,35 @@ public class ChromaPythonService : IChromaDbService, IDisposable
                 
                 foreach (dynamic collection in collections)
                 {
-                    result.Add(collection.ToString());
+                    // PP13-89 Fix: Handle both ChromaDB API versions
+                    // - v0.6.0+: list_collections() returns strings directly (collection names)
+                    // - <v0.6.0: list_collections() returns Collection objects, need to access .name
+                    // Using ToString() on old API returns Python's __repr__() "Collection(name=xxx)"
+                    // which breaks downstream operations expecting plain collection names
+
+                    string collectionName;
+                    if (collection is string strName)
+                    {
+                        // ChromaDB v0.6.0+ returns strings directly
+                        collectionName = strName;
+                    }
+                    else
+                    {
+                        // Older ChromaDB returns Collection objects
+                        // Check if it's already a plain string from Python (PyString)
+                        var collectionStr = collection.ToString();
+                        if (collectionStr.StartsWith("Collection(name="))
+                        {
+                            // Extract name from old __repr__ format "Collection(name=xxx)"
+                            collectionName = collectionStr.Substring(16, collectionStr.Length - 17);
+                        }
+                        else
+                        {
+                            // It's a plain string from Python, use directly
+                            collectionName = collectionStr;
+                        }
+                    }
+                    result.Add(collectionName);
                 }
 
                 if (offset.HasValue)

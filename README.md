@@ -86,6 +86,50 @@ Use `dotnet run --project Embranch/Embranch.csproj` instead of the executable in
 
 </details>
 
+### Linux Prerequisites (WSL2/Ubuntu)
+
+On Linux, Python.NET requires additional configuration to locate the Python shared library. ChromaDB should also be installed in a virtual environment due to PEP 668 restrictions in modern Ubuntu/Debian.
+
+<details>
+<summary><strong>Linux Setup Instructions</strong></summary>
+
+#### 1. Install Python with venv support
+
+```bash
+sudo apt install -y python3 python3-full python3-venv
+```
+
+#### 2. Create a virtual environment and install ChromaDB
+
+```bash
+# In your project directory
+python3 -m venv .venv
+source .venv/bin/activate
+pip install chromadb
+deactivate
+```
+
+#### 3. Find your Python shared library path
+
+```bash
+find /usr -name "libpython3*.so" 2>/dev/null
+```
+
+This typically returns something like `/usr/lib/x86_64-linux-gnu/libpython3.12.so`.
+
+#### 4. Configure environment variables
+
+Your `.mcp.json` must include two additional environment variables:
+
+| Variable | Description | Example |
+|----------|-------------|---------|
+| `PYTHONNET_PYDLL` | Path to Python shared library (.so) | `/usr/lib/x86_64-linux-gnu/libpython3.12.so` |
+| `PYTHONPATH` | Path to venv site-packages (for ChromaDB) | `/home/user/project/.venv/lib/python3.12/site-packages` |
+
+See the Linux example in the Claude Code section below.
+
+</details>
+
 ### Configure Your MCP Client
 
 Embranch works with any MCP-compatible client. Below are setup instructions for the most common clients.
@@ -128,6 +172,7 @@ Restart Claude Desktop after saving the configuration.
 
 Create a `.mcp.json` file in your project root:
 
+**Windows:**
 ```json
 {
   "mcpServers": {
@@ -147,6 +192,30 @@ Create a `.mcp.json` file in your project root:
   }
 }
 ```
+
+**Linux (WSL2/Ubuntu):**
+```json
+{
+  "mcpServers": {
+    "embranch": {
+      "command": "/home/username/tools/embranch/Embranch",
+      "env": {
+        "PYTHONNET_PYDLL": "/usr/lib/x86_64-linux-gnu/libpython3.12.so",
+        "PYTHONPATH": "/home/username/project/.venv/lib/python3.12/site-packages",
+        "CHROMA_DATA_PATH": "./data/chroma",
+        "DOLT_REPOSITORY_PATH": "./data/dolt-repo",
+        "EMBRANCH_DATA_PATH": "./data",
+        "EMBRANCH_PROJECT_ROOT": ".",
+        "ENABLE_LOGGING": "true",
+        "LOG_LEVEL": "Debug",
+        "LOG_FILE_NAME": "./logs/embranch.log"
+      }
+    }
+  }
+}
+```
+
+> **Note:** Replace `username` with your actual Linux username and adjust Python version (3.12) to match your system. Use `find /usr -name "libpython3*.so" 2>/dev/null` to locate the correct library path.
 
 Claude Code automatically detects `.mcp.json` in your project root when you start a session.
 
@@ -305,6 +374,20 @@ Embranch provides 34 MCP tools organized into categories:
 | `ENABLE_LOGGING` | Enable detailed logging (`True`/`False`) | `False` |
 | `LOG_LEVEL` | Logging verbosity (Debug/Info/Warning/Error) | `Information` |
 | `LOG_FILE_NAME` | Path to log file | `./logs/embranch.log` |
+
+#### Linux-Specific Configuration
+
+These variables are **required** on Linux for Python.NET/ChromaDB integration:
+
+| Variable | Description | Example |
+|----------|-------------|---------|
+| `PYTHONNET_PYDLL` | Path to Python shared library (.so file) | `/usr/lib/x86_64-linux-gnu/libpython3.12.so` |
+| `PYTHONPATH` | Path to virtual environment site-packages | `/home/user/project/.venv/lib/python3.12/site-packages` |
+
+To find the correct `PYTHONNET_PYDLL` path:
+```bash
+find /usr -name "libpython3*.so" 2>/dev/null
+```
 
 ## Setting Up DoltHub Remote
 
@@ -468,6 +551,20 @@ User Workflow:
 **Merge Conflicts**
 - Use `preview_dolt_merge` first to see conflicts
 - Provide `conflict_resolutions` JSON to `execute_dolt_merge`
+
+**Linux: "Runtime.PythonDLL was not set" or "BadPythonDllException"**
+- Set `PYTHONNET_PYDLL` to the Python shared library path
+- Find it with: `find /usr -name "libpython3*.so" 2>/dev/null`
+- Example: `"PYTHONNET_PYDLL": "/usr/lib/x86_64-linux-gnu/libpython3.12.so"`
+
+**Linux: "No module named 'chromadb'" despite being installed**
+- ChromaDB must be installed in a virtual environment
+- Set `PYTHONPATH` to point to the venv's site-packages
+- Example: `"PYTHONPATH": "/home/user/project/.venv/lib/python3.12/site-packages"`
+
+**Linux: "externally-managed-environment" when installing ChromaDB**
+- Modern Ubuntu/Debian uses PEP 668 which prevents global pip installs
+- Use a virtual environment: `python3 -m venv .venv && source .venv/bin/activate && pip install chromadb`
 
 ## Project Status: Active Side Project
 

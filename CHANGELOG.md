@@ -2,6 +2,20 @@
 
 All notable changes to Embranch will be documented in this file.
 
+<a name="1.0.3"></a>
+## [1.0.3](https://www.github.com/PieterPrespective/Embranch/releases/tag/v1.0.3) (2026-01-31)
+
+### Bug Fixes
+
+* **chroma:** fix ListCollectionsAsync returning Python __repr__ format (PP13-89)
+  - Fixed collection name parsing to handle ChromaDB v0.6.0+ API changes
+  - Resolves Linux platform change detection and commit failures
+  - Added backward compatibility for older ChromaDB versions
+
+### Tests
+
+* add PP13_89_ListCollectionsNameFormatTests integration tests
+
 <a name="1.0.2"></a>
 ## [1.0.2](https://www.github.com/PieterPrespective/Embranch/releases/tag/v1.0.2) (2026-01-29)
 
