@@ -19,6 +19,8 @@ namespace EmbranchTesting.IntegrationTests
         private string _tempDir = null!;
         private DoltCli _doltCli = null!;
         private Mock<ILogger<DoltCli>> _mockLogger = null!;
+        private Mock<ISyncStateTracker> _mockSyncStateTracker = null!;
+        private IOptions<DoltConfiguration> _doltConfigOptions = null!;
 
         [SetUp]
         public void Setup()
@@ -27,14 +29,15 @@ namespace EmbranchTesting.IntegrationTests
             Directory.CreateDirectory(_tempDir);
 
             _mockLogger = new Mock<ILogger<DoltCli>>();
-            var options = Options.Create(new DoltConfiguration
+            _mockSyncStateTracker = new Mock<ISyncStateTracker>();
+            _doltConfigOptions = Options.Create(new DoltConfiguration
             {
                 DoltExecutablePath = "dolt",
                 RepositoryPath = _tempDir,
                 CommandTimeoutMs = 30000,
                 EnableDebugLogging = true
             });
-            _doltCli = new DoltCli(options, _mockLogger.Object);
+            _doltCli = new DoltCli(_doltConfigOptions, _mockLogger.Object);
         }
 
         [TearDown]
@@ -228,9 +231,9 @@ namespace EmbranchTesting.IntegrationTests
 
             var shortHash = fullHash![..7];
 
-            // Create the DoltShowTool
+            // Create the DoltShowTool (PP13-99: added ISyncStateTracker and IOptions<DoltConfiguration>)
             var showToolLogger = new Mock<ILogger<DoltShowTool>>();
-            var showTool = new DoltShowTool(showToolLogger.Object, _doltCli);
+            var showTool = new DoltShowTool(showToolLogger.Object, _doltCli, _mockSyncStateTracker.Object, _doltConfigOptions);
 
             // Act
             var result = await showTool.DoltShow(shortHash);
@@ -265,9 +268,9 @@ namespace EmbranchTesting.IntegrationTests
             await _doltCli.AddAllAsync();
             await _doltCli.CommitAsync("Test commit for HEAD reference");
 
-            // Create the DoltShowTool
+            // Create the DoltShowTool (PP13-99: added ISyncStateTracker and IOptions<DoltConfiguration>)
             var showToolLogger = new Mock<ILogger<DoltShowTool>>();
-            var showTool = new DoltShowTool(showToolLogger.Object, _doltCli);
+            var showTool = new DoltShowTool(showToolLogger.Object, _doltCli, _mockSyncStateTracker.Object, _doltConfigOptions);
 
             // Act
             var result = await showTool.DoltShow("HEAD");

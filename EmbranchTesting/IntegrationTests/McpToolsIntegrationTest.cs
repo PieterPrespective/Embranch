@@ -137,7 +137,8 @@ namespace EmbranchTesting.IntegrationTests
                 user.DeletionTracker, (ISyncStateTracker)user.DeletionTracker,
                 Options.Create(new DoltConfiguration { RepositoryPath = user.DoltRepoPath, DoltExecutablePath = "dolt" }));
             user.DoltShowTool = new DoltShowTool(
-                loggerFactory.CreateLogger<DoltShowTool>(), user.DoltCli);
+                loggerFactory.CreateLogger<DoltShowTool>(), user.DoltCli, (ISyncStateTracker)user.DeletionTracker,
+                Options.Create(new DoltConfiguration { RepositoryPath = user.DoltRepoPath, DoltExecutablePath = "dolt" }));
         }
         
         [Test]
