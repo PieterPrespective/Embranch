@@ -66,12 +66,16 @@ public class ChromaGetCollectionInfoTool
             // Get document count
             var documentCount = await _chromaService.GetCollectionCountAsync(collection_name);
 
+            // PP13-100: Extract metadata from collection object returned by GetCollectionAsync
+            // The collection object is already a Dictionary<string, object> with a "metadata" key
+            var metadata = ExtractMetadataFromCollection(collection);
+
             ToolLoggingUtility.LogToolSuccess(_logger, toolName, methodName, $"Retrieved info for collection '{collection_name}' with {documentCount} documents");
             return new
             {
                 success = true,
                 name = collection_name,
-                metadata = new Dictionary<string, object>(), // TODO: Extract metadata from collection object
+                metadata = metadata,
                 document_count = documentCount,
                 message = $"Collection '{collection_name}' contains {documentCount} documents"
             };
@@ -86,5 +90,49 @@ public class ChromaGetCollectionInfoTool
                 message = $"Failed to get collection info: {ex.Message}"
             };
         }
+    }
+
+    /// <summary>
+    /// Extracts metadata from the collection object returned by GetCollectionAsync.
+    /// The collection is a Dictionary containing name, id, and metadata fields.
+    /// </summary>
+    /// <param name="collectionData">The collection object from GetCollectionAsync</param>
+    /// <returns>The metadata dictionary, or an empty dictionary if metadata cannot be extracted</returns>
+    private Dictionary<string, object> ExtractMetadataFromCollection(object? collectionData)
+    {
+        if (collectionData == null)
+        {
+            return new Dictionary<string, object>();
+        }
+
+        try
+        {
+            // GetCollectionAsync returns a Dictionary<string, object> with "name", "id", and "metadata" keys
+            if (collectionData is Dictionary<string, object> collectionDict)
+            {
+                if (collectionDict.TryGetValue("metadata", out var metadataValue))
+                {
+                    // The metadata value is already a Dictionary<string, object> from ConvertPyDictToDictionary
+                    if (metadataValue is Dictionary<string, object> metadataDict)
+                    {
+                        return metadataDict;
+                    }
+
+                    _logger.LogWarning("Collection metadata value is not a Dictionary<string, object>, type: {Type}",
+                        metadataValue?.GetType().Name ?? "null");
+                }
+            }
+            else
+            {
+                _logger.LogWarning("Collection data is not a Dictionary<string, object>, type: {Type}",
+                    collectionData.GetType().Name);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to extract metadata from collection object");
+        }
+
+        return new Dictionary<string, object>();
     }
 }
