@@ -190,6 +190,32 @@ namespace Embranch.Tools
                 ToolLoggingUtility.LogToolInfo(_logger, toolName, $"Starting merge from {source_branch} to {target_branch}");
                 var mergeResult = await _syncManager.ProcessMergeAsync(source_branch, force_merge);
 
+                // PP13-90: Log merge result status for diagnostics
+                _logger.LogInformation("ProcessMergeAsync returned Status={Status}, MergeStatus={MergeStatus}",
+                    mergeResult.Status, mergeResult.MergeStatus);
+
+                // PP13-90: Check for local changes blocking merge
+                if (mergeResult.Status == SyncStatusV2.LocalChangesExist)
+                {
+                    ToolLoggingUtility.LogToolFailure(_logger, toolName, methodName,
+                        $"LOCAL_CHANGES_EXIST: {mergeResult.LocalChanges?.TotalChanges ?? 0} uncommitted changes");
+
+                    return new
+                    {
+                        success = false,
+                        error = "LOCAL_CHANGES_EXIST",
+                        message = $"Cannot merge: {mergeResult.LocalChanges?.TotalChanges ?? 0} uncommitted local changes exist. " +
+                                  "Commit or discard changes before merging.",
+                        local_changes = new
+                        {
+                            new_documents = mergeResult.LocalChanges?.NewDocuments?.Count ?? 0,
+                            modified_documents = mergeResult.LocalChanges?.ModifiedDocuments?.Count ?? 0,
+                            deleted_documents = mergeResult.LocalChanges?.DeletedDocuments?.Count ?? 0
+                        },
+                        hint = "Use 'dolt_commit' to save changes, or 'dolt_reset --hard' to discard them."
+                    };
+                }
+
                 // Track resolution statistics
                 int resolvedCount = 0;
                 int autoResolved = 0;

@@ -1022,6 +1022,19 @@ namespace Embranch.Services
                     result.Modified = aggregatedSyncResult.Modified;
                     result.Deleted = aggregatedSyncResult.Deleted;
                     result.ChunksProcessed = aggregatedSyncResult.ChunksProcessed;
+
+                    // PP13-90: Update sync state for all collections after successful merge
+                    var repoPath = _doltConfig.RepositoryPath ?? Environment.CurrentDirectory;
+                    foreach (var collection in doltCollections)
+                    {
+                        await _syncStateTracker.UpdateCommitHashAsync(
+                            repoPath,
+                            collection,
+                            afterCommit,
+                            targetBranch
+                        );
+                    }
+                    _logger.LogInformation("ProcessMergeAsync: Updated sync state for {Count} collections", doltCollections.Count);
                 }
 
                 result.Status = SyncStatusV2.Completed;
