@@ -2,6 +2,19 @@
 
 All notable changes to Embranch will be documented in this file.
 
+<a name="1.1.0"></a>
+## [1.1.0](https://www.github.com/PieterPrespective/Embranch/releases/tag/v1.1.0) (2026-02-02)
+
+### Features
+
+* **chroma:** implement ModifyCollectionAsync for metadata updates and renames (PP13-98) ([756aef0](https://www.github.com/PieterPrespective/Embranch/commit/756aef052029f8b8c8aa22209e8a922eeceee053))
+* **tools:** implement actual diff stats in DoltShow (PP13-99) ([83238ae](https://www.github.com/PieterPrespective/Embranch/commit/83238aed995acfcb64ec63b8a0991a8306406612))
+
+### Bug Fixes
+
+* **chroma:** return collection metadata from GetCollectionInfo (PP13-100) ([6a80b20](https://www.github.com/PieterPrespective/Embranch/commit/6a80b2028a6a3b7fe8fee915af0cd5baca768ba2))
+* **sync:** handle single-chunk document deletion in merge reconciliation (PP13-97) ([c56574e](https://www.github.com/PieterPrespective/Embranch/commit/c56574e669dc41a15ddf0c03d6b29e8e0265ece2))
+
 <a name="1.0.5"></a>
 ## [1.0.5](https://www.github.com/PieterPrespective/Embranch/releases/tag/v1.0.5) (2026-02-02)
 
