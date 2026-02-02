@@ -46,6 +46,9 @@ public class ChromaModifyCollectionToolTests
         );
     }
 
+    /// <summary>
+    /// Tests that renaming a collection tracks the operation and calls ModifyCollectionAsync
+    /// </summary>
     [Test]
     public async Task ModifyCollection_WithRename_ShouldTrackRenameOperation()
     {
@@ -61,10 +64,13 @@ public class ChromaModifyCollectionToolTests
 
         _mockChromaService.Setup(x => x.GetCollectionAsync(originalName))
             .ReturnsAsync(collectionData);
-        
+
+        _mockChromaService.Setup(x => x.ModifyCollectionAsync(originalName, newName, null))
+            .ReturnsAsync(true);
+
         _mockDoltCli.Setup(x => x.GetCurrentBranchAsync())
             .ReturnsAsync("main");
-        
+
         _mockDoltCli.Setup(x => x.GetHeadCommitHashAsync())
             .ReturnsAsync("abc123");
 
@@ -73,12 +79,11 @@ public class ChromaModifyCollectionToolTests
 
         // Assert
         var resultObj = result as dynamic;
-        Assert.That(resultObj?.success, Is.False); // Expected since backend is not implemented
-        Assert.That(resultObj?.stub, Is.True);
+        Assert.That(resultObj?.success, Is.True);
         Assert.That(resultObj?.tracked, Is.True);
-        Assert.That(resultObj?.tracking_details?.operation_type, Is.EqualTo("rename"));
-        Assert.That(resultObj?.tracking_details?.original_name, Is.EqualTo(originalName));
-        Assert.That(resultObj?.tracking_details?.new_name, Is.EqualTo(newName));
+        Assert.That(resultObj?.collection?.original_name, Is.EqualTo(originalName));
+        Assert.That(resultObj?.collection?.new_name, Is.EqualTo(newName));
+        Assert.That(resultObj?.changes?.name_changed, Is.True);
 
         // Verify tracking was called for rename
         _mockDeletionTracker.Verify(x => x.TrackCollectionUpdateAsync(
@@ -90,8 +95,14 @@ public class ChromaModifyCollectionToolTests
             "main",
             "abc123"
         ), Times.Once);
+
+        // Verify backend was called
+        _mockChromaService.Verify(x => x.ModifyCollectionAsync(originalName, newName, null), Times.Once);
     }
 
+    /// <summary>
+    /// Tests that metadata update tracks the operation and calls ModifyCollectionAsync
+    /// </summary>
     [Test]
     public async Task ModifyCollection_WithMetadataUpdate_ShouldTrackMetadataOperation()
     {
@@ -107,10 +118,13 @@ public class ChromaModifyCollectionToolTests
 
         _mockChromaService.Setup(x => x.GetCollectionAsync(collectionName))
             .ReturnsAsync(collectionData);
-        
+
+        _mockChromaService.Setup(x => x.ModifyCollectionAsync(collectionName, null, newMetadata))
+            .ReturnsAsync(true);
+
         _mockDoltCli.Setup(x => x.GetCurrentBranchAsync())
             .ReturnsAsync("main");
-        
+
         _mockDoltCli.Setup(x => x.GetHeadCommitHashAsync())
             .ReturnsAsync("abc123");
 
@@ -119,10 +133,10 @@ public class ChromaModifyCollectionToolTests
 
         // Assert
         var resultObj = result as dynamic;
-        Assert.That(resultObj?.success, Is.False); // Expected since backend is not implemented
+        Assert.That(resultObj?.success, Is.True);
         Assert.That(resultObj?.tracked, Is.True);
-        Assert.That(resultObj?.tracking_details?.operation_type, Is.EqualTo("metadata_update"));
-        Assert.That(resultObj?.tracking_details?.has_metadata_changes, Is.True);
+        Assert.That(resultObj?.changes?.metadata_changed, Is.True);
+        Assert.That(resultObj?.changes?.name_changed, Is.False);
 
         // Verify tracking was called for metadata update
         _mockDeletionTracker.Verify(x => x.TrackCollectionUpdateAsync(
@@ -134,8 +148,14 @@ public class ChromaModifyCollectionToolTests
             "main",
             "abc123"
         ), Times.Once);
+
+        // Verify backend was called
+        _mockChromaService.Verify(x => x.ModifyCollectionAsync(collectionName, null, newMetadata), Times.Once);
     }
 
+    /// <summary>
+    /// Tests that both rename and metadata update are tracked and executed
+    /// </summary>
     [Test]
     public async Task ModifyCollection_WithBothRenameAndMetadata_ShouldTrackRenameOperation()
     {
@@ -150,10 +170,13 @@ public class ChromaModifyCollectionToolTests
 
         _mockChromaService.Setup(x => x.GetCollectionAsync(originalName))
             .ReturnsAsync(collectionData);
-        
+
+        _mockChromaService.Setup(x => x.ModifyCollectionAsync(originalName, newName, newMetadata))
+            .ReturnsAsync(true);
+
         _mockDoltCli.Setup(x => x.GetCurrentBranchAsync())
             .ReturnsAsync("main");
-        
+
         _mockDoltCli.Setup(x => x.GetHeadCommitHashAsync())
             .ReturnsAsync("abc123");
 
@@ -162,8 +185,10 @@ public class ChromaModifyCollectionToolTests
 
         // Assert
         var resultObj = result as dynamic;
+        Assert.That(resultObj?.success, Is.True);
         Assert.That(resultObj?.tracked, Is.True);
-        Assert.That(resultObj?.tracking_details?.operation_type, Is.EqualTo("rename")); // Rename takes precedence
+        Assert.That(resultObj?.changes?.name_changed, Is.True);
+        Assert.That(resultObj?.changes?.metadata_changed, Is.True);
 
         // Verify tracking was called
         _mockDeletionTracker.Verify(x => x.TrackCollectionUpdateAsync(
@@ -175,8 +200,14 @@ public class ChromaModifyCollectionToolTests
             "main",
             "abc123"
         ), Times.Once);
+
+        // Verify backend was called
+        _mockChromaService.Verify(x => x.ModifyCollectionAsync(originalName, newName, newMetadata), Times.Once);
     }
 
+    /// <summary>
+    /// Tests that no tracking or backend call happens when no changes are requested
+    /// </summary>
     [Test]
     public async Task ModifyCollection_WithNoChanges_ShouldNotTrack()
     {
@@ -190,12 +221,16 @@ public class ChromaModifyCollectionToolTests
         _mockChromaService.Setup(x => x.GetCollectionAsync(collectionName))
             .ReturnsAsync(collectionData);
 
+        // ModifyCollectionAsync with no changes should still succeed (no-op)
+        _mockChromaService.Setup(x => x.ModifyCollectionAsync(collectionName, null, null))
+            .ReturnsAsync(true);
+
         // Act - no new name and no new metadata
         var result = await _tool.ModifyCollection(collectionName);
 
         // Assert
         var resultObj = result as dynamic;
-        Assert.That(resultObj?.success, Is.False); // Expected since backend is not implemented
+        Assert.That(resultObj?.success, Is.True); // Should succeed even with no changes
         Assert.That(resultObj?.tracked, Is.False); // Should not track when no changes
 
         // Verify tracking was not called
@@ -204,6 +239,9 @@ public class ChromaModifyCollectionToolTests
             It.IsAny<Dictionary<string, object>>(), It.IsAny<Dictionary<string, object>>(),
             It.IsAny<string>(), It.IsAny<string>()
         ), Times.Never);
+
+        // Verify backend was still called (even for no-op)
+        _mockChromaService.Verify(x => x.ModifyCollectionAsync(collectionName, null, null), Times.Once);
     }
 
     [Test]
@@ -283,6 +321,9 @@ public class ChromaModifyCollectionToolTests
         Assert.That(resultObj?.message, Does.Contain("Failed to modify collection"));
     }
 
+    /// <summary>
+    /// Tests that collection metadata is extracted correctly, excluding id and name fields
+    /// </summary>
     [Test]
     public async Task ExtractCollectionMetadata_WithComplexData_ShouldExtractCorrectly()
     {
@@ -300,10 +341,13 @@ public class ChromaModifyCollectionToolTests
 
         _mockChromaService.Setup(x => x.GetCollectionAsync(collectionName))
             .ReturnsAsync(collectionData);
-        
+
+        _mockChromaService.Setup(x => x.ModifyCollectionAsync(collectionName, newName, null))
+            .ReturnsAsync(true);
+
         _mockDoltCli.Setup(x => x.GetCurrentBranchAsync())
             .ReturnsAsync("main");
-        
+
         _mockDoltCli.Setup(x => x.GetHeadCommitHashAsync())
             .ReturnsAsync("abc123");
 
@@ -315,15 +359,51 @@ public class ChromaModifyCollectionToolTests
             _doltConfig.RepositoryPath,
             collectionName,
             newName,
-            It.Is<Dictionary<string, object>>(m => 
-                m.ContainsKey("metadata") && 
-                m.ContainsKey("custom_field") && 
-                m.ContainsKey("numeric_field") && 
-                !m.ContainsKey("id") && 
+            It.Is<Dictionary<string, object>>(m =>
+                m.ContainsKey("metadata") &&
+                m.ContainsKey("custom_field") &&
+                m.ContainsKey("numeric_field") &&
+                !m.ContainsKey("id") &&
                 !m.ContainsKey("name")),
             It.IsAny<Dictionary<string, object>>(),
             "main",
             "abc123"
         ), Times.Once);
+    }
+
+    /// <summary>
+    /// Tests that when ModifyCollectionAsync returns false, the tool returns failure
+    /// </summary>
+    [Test]
+    public async Task ModifyCollection_WhenBackendFails_ShouldReturnFailure()
+    {
+        // Arrange
+        const string collectionName = "test-collection";
+        var newMetadata = new Dictionary<string, object> { ["key2"] = "value2" };
+        var collectionData = new Dictionary<string, object>
+        {
+            ["metadata"] = new Dictionary<string, object> { ["key1"] = "value1" }
+        };
+
+        _mockChromaService.Setup(x => x.GetCollectionAsync(collectionName))
+            .ReturnsAsync(collectionData);
+
+        _mockChromaService.Setup(x => x.ModifyCollectionAsync(collectionName, null, newMetadata))
+            .ReturnsAsync(false); // Backend returns failure
+
+        _mockDoltCli.Setup(x => x.GetCurrentBranchAsync())
+            .ReturnsAsync("main");
+
+        _mockDoltCli.Setup(x => x.GetHeadCommitHashAsync())
+            .ReturnsAsync("abc123");
+
+        // Act
+        var result = await _tool.ModifyCollection(collectionName, null, newMetadata);
+
+        // Assert
+        var resultObj = result as dynamic;
+        Assert.That(resultObj?.success, Is.False);
+        Assert.That(resultObj?.error, Is.EqualTo("MODIFICATION_FAILED"));
+        Assert.That(resultObj?.tracked, Is.True); // Tracking was still done before the backend call
     }
 }

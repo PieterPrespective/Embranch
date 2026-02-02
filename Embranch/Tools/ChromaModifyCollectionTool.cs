@@ -100,38 +100,14 @@ public class ChromaModifyCollectionTool
                 _logger.LogDebug($"[ChromaModifyCollectionTool] Successfully tracked collection update for '{collection_name}'");
             }
 
-            // STUB: Backend method not yet implemented
-            // TODO: Implement ModifyCollectionAsync in IChromaDbService
-            ToolLoggingUtility.LogToolWarning(_logger, toolName, "Backend method ModifyCollectionAsync not yet implemented");
-            
-            ToolLoggingUtility.LogToolFailure(_logger, toolName, methodName, "Collection modification is not yet implemented in the backend service");
-            return new
-            {
-                success = false,
-                error = "NOT_IMPLEMENTED",
-                message = "Collection modification is not yet implemented in the backend service",
-                stub = true,
-                required_backend_method = "IChromaDbService.ModifyCollectionAsync",
-                tracked = isRename || isMetadataUpdate,
-                tracking_details = isRename || isMetadataUpdate ? new
-                {
-                    operation_type = isRename ? "rename" : "metadata_update",
-                    original_name = collection_name,
-                    new_name = new_name,
-                    has_metadata_changes = isMetadataUpdate,
-                    tracking_timestamp = DateTime.UtcNow
-                } : null
-            };
-
-            // When backend is implemented, the code would be:
-            /*
+            // PP13-98: Call the backend service to modify the collection
             var result = await _chromaService.ModifyCollectionAsync(collection_name, new_name, new_metadata);
-            
+
             if (result)
             {
-                ToolLoggingUtility.LogToolSuccess(_logger, toolName, methodName, 
+                ToolLoggingUtility.LogToolSuccess(_logger, toolName, methodName,
                     $"Successfully modified collection '{collection_name}' with tracking");
-                
+
                 return new
                 {
                     success = true,
@@ -146,21 +122,21 @@ public class ChromaModifyCollectionTool
                         name_changed = isRename,
                         metadata_changed = isMetadataUpdate
                     },
-                    tracked = true,
-                    message = $"Collection '{collection_name}' modified successfully with tracking"
+                    tracked = isRename || isMetadataUpdate,
+                    message = $"Collection '{collection_name}' modified successfully"
                 };
             }
             else
             {
+                ToolLoggingUtility.LogToolFailure(_logger, toolName, methodName, "Collection modification failed in backend service");
                 return new
                 {
                     success = false,
                     error = "MODIFICATION_FAILED",
                     message = "Collection modification failed in backend service",
-                    tracked = true
+                    tracked = isRename || isMetadataUpdate
                 };
             }
-            */
         }
         catch (Exception ex)
         {

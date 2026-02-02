@@ -918,6 +918,200 @@ public class ChromaPythonService : IChromaDbService, IDisposable
         return await GetCollectionCountAsync(collectionName);
     }
 
+    /// <summary>
+    /// Modifies a collection's metadata or renames it.
+    /// For metadata updates: Uses ChromaDB collection.modify(metadata=new_metadata)
+    /// For rename: Uses create/copy/delete pattern since ChromaDB doesn't support native rename
+    /// </summary>
+    /// <param name="collectionName">Current collection name</param>
+    /// <param name="newName">New name for the collection (optional, for rename operations)</param>
+    /// <param name="newMetadata">New metadata to set on the collection (optional)</param>
+    /// <returns>True if modification succeeded, false otherwise</returns>
+    public async Task<bool> ModifyCollectionAsync(string collectionName, string? newName = null, Dictionary<string, object>? newMetadata = null)
+    {
+        await EnsureClientInitializedAsync();
+
+        _logger.LogInformation($"[ChromaPythonService.ModifyCollectionAsync] Starting modification of collection '{collectionName}', newName: {newName ?? "null"}, hasNewMetadata: {newMetadata != null}");
+
+        bool isRename = !string.IsNullOrEmpty(newName) && newName != collectionName;
+        bool isMetadataUpdate = newMetadata != null && newMetadata.Count > 0;
+
+        // If no changes requested, return true (no-op)
+        if (!isRename && !isMetadataUpdate)
+        {
+            _logger.LogInformation($"[ChromaPythonService.ModifyCollectionAsync] No changes requested for collection '{collectionName}'");
+            return true;
+        }
+
+        return await PythonContext.ExecuteAsync(() =>
+        {
+            try
+            {
+                dynamic client = ChromaClientPool.GetClient(_clientId);
+                dynamic collection = client.get_collection(name: collectionName);
+
+                // Handle metadata update first (before potential rename)
+                if (isMetadataUpdate)
+                {
+                    _logger.LogInformation($"[ChromaPythonService.ModifyCollectionAsync] Updating metadata for collection '{collectionName}'");
+                    PyObject pyMetadata = ConvertDictionaryToPyDict(newMetadata!);
+                    collection.modify(metadata: pyMetadata);
+                    _logger.LogInformation($"[ChromaPythonService.ModifyCollectionAsync] Metadata updated successfully");
+                }
+
+                // Handle rename using create/copy/delete pattern
+                if (isRename)
+                {
+                    _logger.LogInformation($"[ChromaPythonService.ModifyCollectionAsync] Renaming collection '{collectionName}' to '{newName}'");
+
+                    // Step 1: Get all documents from old collection (including embeddings for proper copy)
+                    dynamic allDocs = collection.get(include: PythonEngine.Eval("['documents', 'metadatas', 'embeddings']"));
+
+                    var docIds = new List<string>();
+                    var docContents = new List<string>();
+                    var docMetadatas = new List<Dictionary<string, object>>();
+                    var docEmbeddings = new List<List<float>>();
+
+                    bool hasDocuments = false;
+
+                    // Extract IDs
+                    if (allDocs["ids"] != null)
+                    {
+                        foreach (var id in allDocs["ids"])
+                        {
+                            docIds.Add(id.ToString());
+                        }
+                        hasDocuments = docIds.Count > 0;
+                    }
+
+                    if (hasDocuments)
+                    {
+                        // Extract documents
+                        if (allDocs["documents"] != null)
+                        {
+                            foreach (var doc in allDocs["documents"])
+                            {
+                                docContents.Add(doc?.ToString() ?? "");
+                            }
+                        }
+
+                        // Extract metadatas
+                        if (allDocs["metadatas"] != null)
+                        {
+                            foreach (var meta in allDocs["metadatas"])
+                            {
+                                if (meta != null)
+                                {
+                                    docMetadatas.Add(ConvertPyDictToDictionary(meta));
+                                }
+                                else
+                                {
+                                    docMetadatas.Add(new Dictionary<string, object>());
+                                }
+                            }
+                        }
+
+                        // Extract embeddings
+                        if (allDocs["embeddings"] != null)
+                        {
+                            docEmbeddings = ConvertPyEmbeddingsToList(allDocs["embeddings"]);
+                        }
+                    }
+
+                    _logger.LogInformation($"[ChromaPythonService.ModifyCollectionAsync] Found {docIds.Count} documents to copy");
+
+                    // Step 2: Get current collection metadata (use updated metadata if we just changed it)
+                    dynamic currentMetadata = collection.metadata;
+                    Dictionary<string, object> collectionMeta;
+                    if (currentMetadata != null)
+                    {
+                        collectionMeta = ConvertPyDictToDictionary(currentMetadata);
+                    }
+                    else
+                    {
+                        collectionMeta = new Dictionary<string, object>();
+                    }
+
+                    // Step 3: Create new collection with same metadata
+                    PyObject? pyCollectionMeta = collectionMeta.Count > 0 ? ConvertDictionaryToPyDict(collectionMeta) : null;
+
+                    dynamic newCollection;
+                    if (pyCollectionMeta != null)
+                    {
+                        newCollection = client.create_collection(name: newName, metadata: pyCollectionMeta);
+                    }
+                    else
+                    {
+                        newCollection = client.create_collection(name: newName);
+                    }
+                    _logger.LogInformation($"[ChromaPythonService.ModifyCollectionAsync] Created new collection '{newName}'");
+
+                    // Step 4: Copy documents to new collection if any exist
+                    if (hasDocuments)
+                    {
+                        _logger.LogInformation($"[ChromaPythonService.ModifyCollectionAsync] Copying {docIds.Count} documents to new collection");
+
+                        PyObject pyIds = ConvertListToPyList(docIds);
+                        PyObject pyDocs = ConvertListToPyList(docContents);
+                        PyObject pyMetas = ConvertMetadatasToPyList(docMetadatas);
+
+                        // Convert embeddings to Python list of lists
+                        if (docEmbeddings.Count > 0)
+                        {
+                            // Create Python list for embeddings
+                            dynamic pyEmbeddings = PythonEngine.Eval("[]");
+                            foreach (var embedding in docEmbeddings)
+                            {
+                                dynamic pyEmbed = PythonEngine.Eval("[]");
+                                foreach (var val in embedding)
+                                {
+                                    pyEmbed.append(val);
+                                }
+                                pyEmbeddings.append(pyEmbed);
+                            }
+
+                            newCollection.add(
+                                ids: pyIds,
+                                documents: pyDocs,
+                                metadatas: pyMetas,
+                                embeddings: pyEmbeddings
+                            );
+                        }
+                        else
+                        {
+                            // No embeddings - let ChromaDB regenerate them
+                            newCollection.add(
+                                ids: pyIds,
+                                documents: pyDocs,
+                                metadatas: pyMetas
+                            );
+                        }
+
+                        _logger.LogInformation($"[ChromaPythonService.ModifyCollectionAsync] Documents copied successfully");
+                    }
+
+                    // Step 5: Delete old collection
+                    client.delete_collection(name: collectionName);
+                    _logger.LogInformation($"[ChromaPythonService.ModifyCollectionAsync] Deleted old collection '{collectionName}'");
+
+                    _logger.LogInformation($"[ChromaPythonService.ModifyCollectionAsync] Collection renamed from '{collectionName}' to '{newName}' successfully");
+                }
+
+                return true;
+            }
+            catch (PythonException ex)
+            {
+                _logger.LogError($"[ChromaPythonService.ModifyCollectionAsync] Python error: {ex.Message}");
+                return false;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError($"[ChromaPythonService.ModifyCollectionAsync] Error: {ex.Message}");
+                return false;
+            }
+        }, timeoutMs: 120000, operationName: $"ModifyCollection_{collectionName}"); // Longer timeout for rename with copy
+    }
+
     #region Python Conversion Helpers
 
     /// <summary>

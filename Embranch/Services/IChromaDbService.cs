@@ -82,4 +82,14 @@ public interface IChromaDbService
     /// Gets the count of documents in a collection (alias for GetCollectionCountAsync for consistency)
     /// </summary>
     Task<int> GetDocumentCountAsync(string collectionName);
+
+    /// <summary>
+    /// Modifies a collection's metadata or renames it.
+    /// For rename operations, this uses a create/copy/delete pattern since ChromaDB doesn't support native rename.
+    /// </summary>
+    /// <param name="collectionName">Current collection name</param>
+    /// <param name="newName">New name for the collection (optional, for rename operations)</param>
+    /// <param name="newMetadata">New metadata to set on the collection (optional)</param>
+    /// <returns>True if modification succeeded, false otherwise</returns>
+    Task<bool> ModifyCollectionAsync(string collectionName, string? newName = null, Dictionary<string, object>? newMetadata = null);
 }
