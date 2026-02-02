@@ -189,33 +189,46 @@ namespace Embranch.Services
         }
 
         /// <summary>
-        /// Fallback method to query chunk IDs by pattern matching
+        /// Fallback method to query chunk IDs by pattern matching.
+        /// PP13-97: Also checks for the base document ID itself (single-chunk documents).
         /// </summary>
         private async Task<List<string>> QueryChunkIdsByPatternAsync(string collectionName, string baseDocumentId)
         {
             // Get all documents in collection (limited query for performance)
             var result = await _chromaService.GetDocumentsAsync(collectionName, null, null, 10000);
-            
-            if (result is Dictionary<string, object> dict && 
-                dict.TryGetValue("ids", out var idsObj) && 
+
+            if (result is Dictionary<string, object> dict &&
+                dict.TryGetValue("ids", out var idsObj) &&
                 idsObj is List<object> idList)
             {
-                var pattern = $"^{Regex.Escape(baseDocumentId)}_chunk_\\d+$";
-                var regex = new Regex(pattern);
-                
+                var chunkPattern = $"^{Regex.Escape(baseDocumentId)}_chunk_\\d+$";
+                var chunkRegex = new Regex(chunkPattern);
+
                 var chunkIds = idList
                     .Select(id => id?.ToString() ?? "")
-                    .Where(id => !string.IsNullOrEmpty(id) && regex.IsMatch(id))
+                    .Where(id => !string.IsNullOrEmpty(id) && chunkRegex.IsMatch(id))
                     .ToList();
-                
+
                 if (chunkIds.Count > 0)
                 {
+                    _logger.LogDebug("PP13-97: Found {Count} chunk IDs for document {DocumentId} via pattern matching",
+                        chunkIds.Count, baseDocumentId);
                     return chunkIds;
                 }
+
+                // PP13-97: Check if the base document ID itself exists (single-chunk documents)
+                // Single-chunk documents are stored with their base ID, not with _chunk_0 suffix
+                var baseIdExists = idList.Any(id => id?.ToString() == baseDocumentId);
+                if (baseIdExists)
+                {
+                    _logger.LogDebug("PP13-97: Found single-chunk document with base ID '{DocumentId}' in collection {Collection}",
+                        baseDocumentId, collectionName);
+                    return new List<string> { baseDocumentId };
+                }
             }
-            
+
             // If no chunks found, return empty list (document doesn't exist)
-            _logger.LogWarning("No chunks found for document {DocumentId} in collection {Collection}", 
+            _logger.LogWarning("No chunks found for document {DocumentId} in collection {Collection}",
                 baseDocumentId, collectionName);
             return new List<string>();
         }

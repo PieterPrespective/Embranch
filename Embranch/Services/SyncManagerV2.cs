@@ -2042,8 +2042,15 @@ namespace Embranch.Services
                 // Get all document IDs from ChromaDB (grouped by doc ID, not chunk)
                 var chromaDocIds = await GetAllChromaDocumentIdsAsync(collectionName);
 
-                _logger.LogDebug("PP13-95: Reconciliation - Dolt has {DoltCount} docs, ChromaDB has {ChromaCount} docs",
+                // PP13-97: Enhanced diagnostic logging
+                _logger.LogInformation("PP13-97: Reconciliation - Dolt has {DoltCount} docs, ChromaDB has {ChromaCount} docs",
                     doltDocIds.Count, chromaDocIds.Count);
+
+                if (_logger.IsEnabled(Microsoft.Extensions.Logging.LogLevel.Debug))
+                {
+                    _logger.LogDebug("PP13-97: Dolt document IDs: [{DoltIds}]", string.Join(", ", doltDocIds.OrderBy(id => id)));
+                    _logger.LogDebug("PP13-97: ChromaDB document IDs: [{ChromaIds}]", string.Join(", ", chromaDocIds.OrderBy(id => id)));
+                }
 
                 // Find documents missing from ChromaDB that exist in Dolt
                 var missingInChroma = doltDocIds.Except(chromaDocIds).ToList();
@@ -2070,21 +2077,25 @@ namespace Embranch.Services
                 var extraInChroma = chromaDocIds.Except(doltDocIds).ToList();
                 if (extraInChroma.Any())
                 {
-                    _logger.LogInformation("PP13-95: Found {Count} documents in ChromaDB not in Dolt - removing",
-                        extraInChroma.Count);
+                    // PP13-97: Enhanced logging for deletion tracking
+                    _logger.LogInformation("PP13-97: Found {Count} documents in ChromaDB not in Dolt - removing: [{ExtraIds}]",
+                        extraInChroma.Count, string.Join(", ", extraInChroma));
 
                     foreach (var docId in extraInChroma)
                     {
                         try
                         {
-                            // Delete all chunks for this document
-                            var chunkIds = DocumentConverterUtilityV2.GetChunkIds(docId, 100); // Generous chunk count
-                            await _chromaService.DeleteDocumentsAsync(collectionName, chunkIds);
+                            // PP13-97: Delete document using base ID with expandChunks: true
+                            // This handles both single-chunk docs (stored as "doc4") and
+                            // multi-chunk docs (stored as "doc4_chunk_0", "doc4_chunk_1", etc.)
+                            _logger.LogDebug("PP13-97: Deleting document '{DocId}' from ChromaDB (will expand to chunks)", docId);
+                            await _chromaService.DeleteDocumentsAsync(collectionName, new List<string> { docId }, expandChunks: true);
                             result.Deleted++;
+                            _logger.LogDebug("PP13-97: Successfully deleted document '{DocId}'", docId);
                         }
                         catch (Exception ex)
                         {
-                            _logger.LogWarning(ex, "PP13-95: Failed to delete extra document {DocId} from ChromaDB", docId);
+                            _logger.LogWarning(ex, "PP13-97: Failed to delete extra document {DocId} from ChromaDB", docId);
                         }
                     }
                 }
@@ -2156,7 +2167,8 @@ namespace Embranch.Services
         }
 
         /// <summary>
-        /// PP13-95: Gets all document IDs from ChromaDB (grouped by doc ID, not chunk)
+        /// PP13-95: Gets all document IDs from ChromaDB (grouped by doc ID, not chunk).
+        /// PP13-97: Handles both chunked docs (docId_chunk_N) and single-chunk docs (docId only).
         /// </summary>
         private async Task<HashSet<string>> GetAllChromaDocumentIdsAsync(string collectionName)
         {
@@ -2170,10 +2182,15 @@ namespace Embranch.Services
                 var resultsDict = results as Dictionary<string, object> ?? new Dictionary<string, object>();
                 var chromaIds = (resultsDict.GetValueOrDefault("ids") as List<object>) ?? new List<object>();
 
+                // PP13-97: Log raw ChromaDB IDs for debugging
+                _logger.LogDebug("PP13-97: Raw ChromaDB IDs for '{Collection}': [{RawIds}]",
+                    collectionName, string.Join(", ", chromaIds.Select(id => id?.ToString() ?? "null")));
+
                 foreach (var id in chromaIds)
                 {
                     var chunkId = id?.ToString() ?? "";
                     // Extract document ID from chunk ID (format: docId_chunk_N)
+                    // Single-chunk documents don't have _chunk_ suffix, so they return as-is
                     var lastChunkIndex = chunkId.LastIndexOf("_chunk_");
                     var docId = lastChunkIndex > 0 ? chunkId.Substring(0, lastChunkIndex) : chunkId;
 
@@ -2182,6 +2199,9 @@ namespace Embranch.Services
                         ids.Add(docId);
                     }
                 }
+
+                _logger.LogDebug("PP13-97: Extracted {UniqueCount} unique base document IDs from {TotalCount} ChromaDB entries",
+                    ids.Count, chromaIds.Count);
 
                 return ids;
             }
