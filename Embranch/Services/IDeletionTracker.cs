@@ -101,5 +101,22 @@ namespace Embranch.Services
         /// Cleans up committed collection deletion records for a repository
         /// </summary>
         Task CleanupCommittedCollectionDeletionsAsync(string repoPath);
+
+        /// <summary>
+        /// Discards all pending deletions for a specific branch.
+        /// Used after reset operations to clear stale deletion tracking.
+        /// PP13-95: Clear deletion tracking after DoltReset to prevent stale records from blocking merges.
+        /// </summary>
+        /// <param name="repoPath">Path to the Dolt repository</param>
+        /// <param name="branchName">The branch to discard deletions for</param>
+        Task DiscardPendingDeletionsForBranchAsync(string repoPath, string branchName);
+
+        /// <summary>
+        /// Discards a specific deletion record by its ID.
+        /// Used when validation determines a deletion is stale or invalid.
+        /// PP13-95: Allows FindDeletedDocumentsAsync to discard invalid deletions during detection.
+        /// </summary>
+        /// <param name="deletionId">The ID of the deletion record to discard</param>
+        Task DiscardDeletionAsync(string deletionId);
     }
 }

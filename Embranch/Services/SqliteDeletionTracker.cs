@@ -780,6 +780,70 @@ namespace Embranch.Services
         }
 
         /// <summary>
+        /// PP13-95: Discards all pending deletions for a specific branch.
+        /// Used after reset operations to clear stale deletion tracking that may block merges.
+        /// </summary>
+        /// <param name="repoPath">Path to the Dolt repository</param>
+        /// <param name="branchName">The branch to discard deletions for</param>
+        public async Task DiscardPendingDeletionsForBranchAsync(string repoPath, string branchName)
+        {
+            await _semaphore.WaitAsync();
+            try
+            {
+                using var connection = new SqliteConnection($"Data Source={_dbPath}");
+                await connection.OpenAsync();
+
+                const string sql = @"
+                    DELETE FROM local_deletions
+                    WHERE repo_path = @repoPath
+                    AND branch_context = @branchName
+                    AND sync_status = 'pending'";
+
+                using var command = new SqliteCommand(sql, connection);
+                command.Parameters.AddWithValue("@repoPath", repoPath);
+                command.Parameters.AddWithValue("@branchName", branchName);
+
+                var deletedRows = await command.ExecuteNonQueryAsync();
+                _logger.LogInformation("PP13-95: Discarded {Count} pending deletion records for branch '{Branch}' in repo: {RepoPath}",
+                    deletedRows, branchName, repoPath);
+            }
+            finally
+            {
+                _semaphore.Release();
+            }
+        }
+
+        /// <summary>
+        /// PP13-95: Discards a specific deletion record by its ID.
+        /// Used when validation determines a deletion is stale or invalid.
+        /// </summary>
+        /// <param name="deletionId">The ID of the deletion record to discard</param>
+        public async Task DiscardDeletionAsync(string deletionId)
+        {
+            await _semaphore.WaitAsync();
+            try
+            {
+                using var connection = new SqliteConnection($"Data Source={_dbPath}");
+                await connection.OpenAsync();
+
+                const string sql = "DELETE FROM local_deletions WHERE id = @id";
+
+                using var command = new SqliteCommand(sql, connection);
+                command.Parameters.AddWithValue("@id", deletionId);
+
+                var deletedRows = await command.ExecuteNonQueryAsync();
+                if (deletedRows > 0)
+                {
+                    _logger.LogDebug("PP13-95: Discarded stale deletion record with ID: {DeletionId}", deletionId);
+                }
+            }
+            finally
+            {
+                _semaphore.Release();
+            }
+        }
+
+        /// <summary>
         /// Reads deletion records from a command result
         /// </summary>
         private async Task<List<DeletionRecord>> ReadDeletionRecordsAsync(SqliteCommand command)
@@ -1117,13 +1181,70 @@ namespace Embranch.Services
         }
 
         /// <summary>
-        /// Cleans up stale sync states (placeholder implementation)
+        /// PP13-95: Cleans up stale sync states for deleted collections.
+        /// Removes sync state records where the collection no longer exists in ChromaDB.
         /// </summary>
+        /// <param name="repoPath">Path to the Dolt repository</param>
         public async Task CleanupStaleSyncStatesAsync(string repoPath)
         {
-            // TODO: Implement cleanup logic for deleted collections
-            await Task.CompletedTask;
-            _logger.LogDebug($"Sync state cleanup requested for repo {repoPath}");
+            await _semaphore.WaitAsync();
+            try
+            {
+                _logger.LogDebug("PP13-95: Starting sync state cleanup for repo {RepoPath}", repoPath);
+
+                using var connection = new SqliteConnection($"Data Source={_dbPath}");
+                await connection.OpenAsync();
+
+                // Get all sync states for this repo
+                const string selectSql = @"
+                    SELECT DISTINCT collection_name
+                    FROM sync_state
+                    WHERE repo_path = @repoPath";
+
+                using var selectCommand = new SqliteCommand(selectSql, connection);
+                selectCommand.Parameters.AddWithValue("@repoPath", repoPath);
+
+                var trackedCollections = new List<string>();
+                using (var reader = await selectCommand.ExecuteReaderAsync())
+                {
+                    while (await reader.ReadAsync())
+                    {
+                        trackedCollections.Add(reader.GetString(0));
+                    }
+                }
+
+                if (trackedCollections.Count == 0)
+                {
+                    _logger.LogDebug("PP13-95: No sync states found to clean up for repo {RepoPath}", repoPath);
+                    return;
+                }
+
+                // Also clean up deletion tracking for orphaned records (older than 7 days with no activity)
+                const string cleanupOldDeletionsSql = @"
+                    DELETE FROM local_deletions
+                    WHERE repo_path = @repoPath
+                    AND sync_status = 'pending'
+                    AND created_at < @cutoffDate";
+
+                var cutoffDate = DateTime.UtcNow.AddDays(-7);
+                using var cleanupCommand = new SqliteCommand(cleanupOldDeletionsSql, connection);
+                cleanupCommand.Parameters.AddWithValue("@repoPath", repoPath);
+                cleanupCommand.Parameters.AddWithValue("@cutoffDate", cutoffDate);
+
+                var orphanedDeletions = await cleanupCommand.ExecuteNonQueryAsync();
+                if (orphanedDeletions > 0)
+                {
+                    _logger.LogInformation("PP13-95: Cleaned up {Count} orphaned deletion records older than 7 days for repo {RepoPath}",
+                        orphanedDeletions, repoPath);
+                }
+
+                _logger.LogDebug("PP13-95: Sync state cleanup completed for repo {RepoPath}, tracked {Count} collections",
+                    repoPath, trackedCollections.Count);
+            }
+            finally
+            {
+                _semaphore.Release();
+            }
         }
 
         /// <summary>

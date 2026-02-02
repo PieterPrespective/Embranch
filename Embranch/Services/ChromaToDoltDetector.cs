@@ -362,7 +362,8 @@ namespace Embranch.Services
         }
 
         /// <summary>
-        /// Find documents that have been deleted from ChromaDB but still exist in Dolt
+        /// Find documents that have been deleted from ChromaDB but still exist in Dolt.
+        /// PP13-95: Now validates branch context and document existence to filter out stale deletions.
         /// </summary>
         public async Task<List<DeletedDocumentV2>> FindDeletedDocumentsAsync(string collectionName)
         {
@@ -371,27 +372,52 @@ namespace Embranch.Services
             try
             {
                 var deleted = new List<DeletedDocumentV2>();
-                
-                // STEP 1: Check deletion tracking database for pending deletions
+
+                // PP13-95: Get current branch context for validation
+                var currentBranch = await _dolt.GetCurrentBranchAsync();
+                _logger?.LogDebug("PP13-95: Current branch context: {Branch}", currentBranch);
+
+                // STEP 1: Check deletion tracking database for pending deletions with context validation
                 _logger?.LogDebug("Checking deletion tracking database for pending deletions");
                 var pendingDeletions = await _deletionTracker.GetPendingDeletionsAsync(_doltConfig.RepositoryPath, collectionName);
-                
+
                 foreach (var deletion in pendingDeletions)
                 {
-                    _logger?.LogDebug("Found pending deletion from tracking: {DocId}", deletion.DocId);
+                    // PP13-95: Validate branch context - skip deletions from different branches
+                    if (!string.IsNullOrEmpty(deletion.BranchContext) &&
+                        deletion.BranchContext != currentBranch)
+                    {
+                        _logger?.LogDebug("PP13-95: Discarding stale deletion for {DocId} - wrong branch context ({DeletionBranch} != {CurrentBranch})",
+                            deletion.DocId, deletion.BranchContext, currentBranch);
+                        await _deletionTracker.DiscardDeletionAsync(deletion.Id);
+                        continue;
+                    }
+
+                    // PP13-95: Validate document actually exists in Dolt before reporting as pending deletion
+                    var existsInDolt = await CheckDocumentExistsInDoltAsync(collectionName, deletion.DocId);
+                    if (!existsInDolt)
+                    {
+                        // Document already deleted or never existed - discard this stale tracking record
+                        _logger?.LogDebug("PP13-95: Discarding stale deletion for {DocId} - document does not exist in Dolt",
+                            deletion.DocId);
+                        await _deletionTracker.DiscardDeletionAsync(deletion.Id);
+                        continue;
+                    }
+
+                    _logger?.LogDebug("Found valid pending deletion from tracking: {DocId}", deletion.DocId);
                     deleted.Add(new DeletedDocumentV2(
-                        deletion.DocId, 
-                        collectionName, 
+                        deletion.DocId,
+                        collectionName,
                         System.Text.Json.JsonSerializer.Serialize(new List<string>()), // Will be filled during sync
                         deletion.OriginalContentHash
                     ));
                 }
-                
+
                 // STEP 2: Fallback - Find documents in Dolt but not in ChromaDB (traditional approach)
                 _logger?.LogDebug("Running fallback deletion detection - comparing Dolt vs ChromaDB");
                 var doltDocs = await GetDoltDocumentsAsync(collectionName);
                 var chromaIds = await GetChromaDocumentIdsAsync(collectionName);
-                
+
                 foreach (var doltDoc in doltDocs)
                 {
                     if (!chromaIds.Contains(doltDoc.DocId))
@@ -401,7 +427,7 @@ namespace Embranch.Services
                         {
                             // Get chunk IDs from sync log for cleanup
                             var chunkIds = await GetChunkIdsFromSyncLogAsync(doltDoc.DocId, collectionName);
-                            
+
                             _logger?.LogDebug("Found deleted document via fallback detection: {DocId}", doltDoc.DocId);
                             deleted.Add(new DeletedDocumentV2(
                                 doltDoc.DocId,
@@ -411,8 +437,8 @@ namespace Embranch.Services
                         }
                     }
                 }
-                
-                _logger?.LogDebug("Found {Count} deleted documents total ({TrackedCount} from tracking, {FallbackCount} from fallback)", 
+
+                _logger?.LogDebug("Found {Count} deleted documents total ({TrackedCount} from tracking, {FallbackCount} from fallback)",
                     deleted.Count, pendingDeletions.Count, deleted.Count - pendingDeletions.Count);
                 return deleted;
             }
@@ -420,6 +446,56 @@ namespace Embranch.Services
             {
                 _logger?.LogError(ex, "Failed to find deleted documents in collection {Collection}", collectionName);
                 return new List<DeletedDocumentV2>();
+            }
+        }
+
+        /// <summary>
+        /// PP13-95: Check if a document exists in Dolt for the given collection
+        /// </summary>
+        private async Task<bool> CheckDocumentExistsInDoltAsync(string collectionName, string docId)
+        {
+            try
+            {
+                var sql = $@"
+                    SELECT COUNT(*) as count
+                    FROM documents
+                    WHERE collection_name = '{collectionName.Replace("'", "''")}'
+                    AND doc_id = '{docId.Replace("'", "''")}'";
+
+                var results = await _dolt.QueryAsync<dynamic>(sql);
+                if (results == null || !results.Any()) return false;
+
+                var result = results.FirstOrDefault();
+                if (result is System.Text.Json.JsonElement jsonElement)
+                {
+                    if (jsonElement.TryGetProperty("count", out var countProperty))
+                    {
+                        if (countProperty.TryGetInt32(out var count))
+                        {
+                            return count > 0;
+                        }
+                        if (countProperty.ValueKind == System.Text.Json.JsonValueKind.String)
+                        {
+                            return int.TryParse(countProperty.GetString(), out var parsedCount) && parsedCount > 0;
+                        }
+                    }
+                }
+                else if (result != null)
+                {
+                    return (int)result.count > 0;
+                }
+
+                return false;
+            }
+            catch (DoltException ex) when (ex.Message.Contains("table not found"))
+            {
+                // Fresh/empty Dolt database
+                return false;
+            }
+            catch (Exception ex)
+            {
+                _logger?.LogWarning(ex, "PP13-95: Failed to check if document {DocId} exists in Dolt", docId);
+                return false;
             }
         }
 

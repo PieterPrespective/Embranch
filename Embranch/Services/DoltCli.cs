@@ -130,6 +130,7 @@ namespace Embranch.Services
         /// Core command execution method. Handles process management, timeout, and error capture.
         /// Uses CliWrap for robust async process execution with proper cancellation support.
         /// PP13-87-C1: Now uses effective path if set, otherwise configured path.
+        /// PP13-96: Sets NO_COLOR=1 environment variable to prevent ANSI escape codes in output.
         /// </summary>
         private async Task<DoltCommandResult> ExecuteDoltCommandAsync(params string[] args)
         {
@@ -143,9 +144,11 @@ namespace Embranch.Services
 
             try
             {
+                // PP13-96: Set NO_COLOR=1 to prevent ANSI escape codes in output
                 var result = await Cli.Wrap(_doltPath)
                     .WithArguments(args)
                     .WithWorkingDirectory(workingDirectory)
+                    .WithEnvironmentVariables(new Dictionary<string, string?> { ["NO_COLOR"] = "1" })
                     .WithValidation(CommandResultValidation.None)
                     .ExecuteBufferedAsync(new CancellationTokenSource(_commandTimeout).Token);
 
@@ -771,18 +774,109 @@ namespace Embranch.Services
                 var parts = line.Split(' ', 2);
                 if (parts.Length >= 2)
                 {
-                    // Strip ANSI color codes and extract just the commit message
-                    var messageWithAnsi = parts[1];
-                    var cleanMessage = StripAnsiColorCodes(messageWithAnsi);
-                    
+                    // PP13-96: Strip ANSI color codes from BOTH hash and message
+                    var cleanHash = StripAnsiColorCodes(parts[0]);
+                    var cleanMessage = StripAnsiColorCodes(parts[1]);
+
                     commits.Add(new CommitInfo(
-                        parts[0],
+                        cleanHash,
                         cleanMessage,
                         "", // Author not available in --oneline format
                         DateTime.Now // Date not available in --oneline format
                     ));
                 }
             }
+            return commits;
+        }
+
+        /// <summary>
+        /// PP13-96: Gets commit log with full author and date information.
+        /// Uses 'dolt log' without --oneline to retrieve complete commit metadata.
+        /// Parses the full format output which includes commit hash, author, date, and message.
+        /// </summary>
+        /// <param name="limit">Maximum number of commits to return (default: 10)</param>
+        /// <returns>Collection of commit information including author and date</returns>
+        public async Task<IEnumerable<CommitInfo>> GetLogWithAuthorAsync(int limit = 10)
+        {
+            var result = await ExecuteDoltCommandAsync("log", "-n", limit.ToString());
+
+            if (!result.Success || string.IsNullOrEmpty(result.Output))
+                return Enumerable.Empty<CommitInfo>();
+
+            var commits = new List<CommitInfo>();
+            var lines = result.Output.Split('\n');
+
+            string? currentHash = null;
+            string? currentAuthor = null;
+            DateTime currentDate = DateTime.Now;
+            var messageLines = new List<string>();
+
+            foreach (var line in lines)
+            {
+                var trimmed = line.Trim();
+
+                if (trimmed.StartsWith("commit "))
+                {
+                    // Save previous commit if exists
+                    if (currentHash != null)
+                    {
+                        commits.Add(new CommitInfo(
+                            StripAnsiColorCodes(currentHash),
+                            string.Join(" ", messageLines).Trim(),
+                            currentAuthor ?? "",
+                            currentDate
+                        ));
+                        messageLines.Clear();
+                    }
+
+                    // Extract hash (may have branch info like "commit abc123 (HEAD -> main)")
+                    var hashPart = trimmed.Substring(7).Trim();
+                    // Remove any trailing parenthetical info
+                    var parenIndex = hashPart.IndexOf('(');
+                    currentHash = parenIndex > 0 ? hashPart.Substring(0, parenIndex).Trim() : hashPart;
+                    currentAuthor = null;
+                    currentDate = DateTime.Now;
+                }
+                else if (trimmed.StartsWith("Author:"))
+                {
+                    // Parse: Author: Name <email>
+                    var authorMatch = Regex.Match(trimmed, @"Author:\s*(.+?)\s*<(.+?)>");
+                    if (authorMatch.Success)
+                    {
+                        currentAuthor = $"{authorMatch.Groups[1].Value.Trim()} <{authorMatch.Groups[2].Value.Trim()}>";
+                    }
+                    else
+                    {
+                        currentAuthor = trimmed.Substring(7).Trim();
+                    }
+                }
+                else if (trimmed.StartsWith("Date:"))
+                {
+                    // Parse: Date: Mon Feb 2 12:00:00 2026 +0000
+                    var dateStr = trimmed.Substring(5).Trim();
+                    if (DateTime.TryParse(dateStr, out var parsed))
+                    {
+                        currentDate = parsed;
+                    }
+                }
+                else if (!string.IsNullOrWhiteSpace(trimmed) && currentHash != null)
+                {
+                    // Commit message line (indented in original output)
+                    messageLines.Add(trimmed);
+                }
+            }
+
+            // Don't forget the last commit
+            if (currentHash != null)
+            {
+                commits.Add(new CommitInfo(
+                    StripAnsiColorCodes(currentHash),
+                    string.Join(" ", messageLines).Trim(),
+                    currentAuthor ?? "",
+                    currentDate
+                ));
+            }
+
             return commits;
         }
 
@@ -1760,17 +1854,24 @@ namespace Embranch.Services
         /// </summary>
         /// <param name="input">Raw git output with ANSI codes</param>
         /// <returns>Clean commit message without ANSI codes or branch info</returns>
+        /// <summary>
+        /// PP13-96: Enhanced ANSI escape code stripping.
+        /// Handles all ANSI sequences including reset codes without digits (like \x1B[m).
+        /// </summary>
         private static string StripAnsiColorCodes(string input)
         {
             if (string.IsNullOrEmpty(input))
                 return input;
 
-            // Remove ANSI color codes (pattern: \[\d+(;\d+)*m)
-            var ansiPattern = @"\x1b\[\d+(;\d+)*m";
+            // PP13-96: Comprehensive ANSI escape sequence pattern
+            // Matches: ESC[...m (colors with or without digits), ESC[...H (cursor), etc.
+            // The \d* makes digits optional to catch reset sequences like \x1B[m
+            var ansiPattern = @"\x1b\[\d*(;\d+)*[a-zA-Z]";
             var withoutAnsi = System.Text.RegularExpressions.Regex.Replace(input, ansiPattern, string.Empty);
 
-            // Also handle the bracket-only format [0m[33m etc
-            var bracketPattern = @"\[\d+(;\d+)*m";
+            // Also handle the bracket-only format [0m[33m etc (malformed or stripped ESC)
+            // The \d* makes digits optional to catch [m as well
+            var bracketPattern = @"\[\d*(;\d+)*m";
             withoutAnsi = System.Text.RegularExpressions.Regex.Replace(withoutAnsi, bracketPattern, string.Empty);
 
             // Remove git branch information in parentheses like "(HEAD -> main)"

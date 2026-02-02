@@ -1,6 +1,8 @@
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using ModelContextProtocol.Server;
 using System.ComponentModel;
+using Embranch.Models;
 using Embranch.Services;
 using Embranch.Utilities;
 
@@ -17,6 +19,9 @@ public class DoltResetTool
     private readonly ISyncManagerV2 _syncManager;
     private readonly IEmbranchStateManifest _manifestService;
     private readonly ISyncStateChecker _syncStateChecker;
+    private readonly IDeletionTracker _deletionTracker;
+    private readonly ISyncStateTracker _syncStateTracker;
+    private readonly DoltConfiguration _doltConfig;
 
     /// <summary>
     /// Initializes a new instance of the DoltResetTool class
@@ -26,13 +31,19 @@ public class DoltResetTool
         IDoltCli doltCli,
         ISyncManagerV2 syncManager,
         IEmbranchStateManifest manifestService,
-        ISyncStateChecker syncStateChecker)
+        ISyncStateChecker syncStateChecker,
+        IDeletionTracker deletionTracker,
+        ISyncStateTracker syncStateTracker,
+        IOptions<DoltConfiguration> doltConfig)
     {
         _logger = logger;
         _doltCli = doltCli;
         _syncManager = syncManager;
         _manifestService = manifestService;
         _syncStateChecker = syncStateChecker;
+        _deletionTracker = deletionTracker;
+        _syncStateTracker = syncStateTracker;
+        _doltConfig = doltConfig.Value;
     }
 
     /// <summary>
@@ -126,6 +137,9 @@ public class DoltResetTool
             var toCommit = await _doltCli.GetHeadCommitHashAsync();
             var currentBranch = await _doltCli.GetCurrentBranchAsync();
 
+            // PP13-95: Clear deletion tracking after reset to prevent stale records from blocking merges
+            await ClearDeletionTrackingAfterResetAsync(currentBranch);
+
             // PP13-79-C1: Update manifest after successful reset
             await UpdateManifestAfterResetAsync(toCommit, currentBranch);
 
@@ -217,6 +231,40 @@ public class DoltResetTool
         catch (Exception ex)
         {
             ToolLoggingUtility.LogToolWarning(_logger, nameof(DoltResetTool), $"⚠️ PP13-79-C1: Failed to update manifest: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// PP13-95: Clears deletion tracking after a successful reset.
+    /// Prevents stale deletion records from previous sessions blocking merge operations.
+    /// </summary>
+    private async Task ClearDeletionTrackingAfterResetAsync(string? currentBranch)
+    {
+        try
+        {
+            var repoPath = _doltConfig.RepositoryPath ?? Environment.CurrentDirectory;
+            var branch = currentBranch ?? "main";
+
+            ToolLoggingUtility.LogToolInfo(_logger, nameof(DoltResetTool),
+                $"PP13-95: Clearing deletion tracking for branch '{branch}' after reset");
+
+            // Clear pending deletions for the current branch
+            await _deletionTracker.DiscardPendingDeletionsForBranchAsync(repoPath, branch);
+
+            // Also cleanup any stale sync states
+            await _syncStateTracker.CleanupStaleSyncStatesAsync(repoPath);
+
+            // Cleanup stale deletion tracking records (older than 30 days)
+            await _deletionTracker.CleanupStaleTrackingAsync(repoPath);
+
+            ToolLoggingUtility.LogToolInfo(_logger, nameof(DoltResetTool),
+                $"✅ PP13-95: Deletion tracking cleared for branch '{branch}'");
+        }
+        catch (Exception ex)
+        {
+            // Don't fail the reset operation for cleanup issues
+            ToolLoggingUtility.LogToolWarning(_logger, nameof(DoltResetTool),
+                $"⚠️ PP13-95: Failed to clear deletion tracking: {ex.Message}");
         }
     }
 }

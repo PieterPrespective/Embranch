@@ -1005,17 +1005,28 @@ namespace Embranch.Services
                     foreach (var collection in doltCollections)
                     {
                         _logger.LogInformation("ProcessMergeAsync: Syncing collection '{Collection}' after merge", collection);
-                        
+
+                        // Step 1: Delta-based sync (existing behavior)
                         var collectionSyncResult = await SyncDoltToChromaAsync(collection, beforeCommit, afterCommit);
-                        
+
                         // Aggregate results
                         aggregatedSyncResult.Added += collectionSyncResult.Added;
                         aggregatedSyncResult.Modified += collectionSyncResult.Modified;
                         aggregatedSyncResult.Deleted += collectionSyncResult.Deleted;
                         aggregatedSyncResult.ChunksProcessed += collectionSyncResult.ChunksProcessed;
-                        
-                        _logger.LogInformation("ProcessMergeAsync: Synced collection '{Collection}' - Added: {Added}, Modified: {Modified}, Deleted: {Deleted}", 
+
+                        _logger.LogInformation("ProcessMergeAsync: Delta sync for '{Collection}' - Added: {Added}, Modified: {Modified}, Deleted: {Deleted}",
                             collection, collectionSyncResult.Added, collectionSyncResult.Modified, collectionSyncResult.Deleted);
+
+                        // Step 2: PP13-95 - Post-merge reconciliation to ensure full state consistency
+                        var reconcileResult = await ReconcileDoltToChromaAsync(collection);
+                        if (reconcileResult.TotalChanges > 0)
+                        {
+                            aggregatedSyncResult.Added += reconcileResult.Added;
+                            aggregatedSyncResult.Deleted += reconcileResult.Deleted;
+                            _logger.LogInformation("ProcessMergeAsync: PP13-95 Reconciliation for '{Collection}' - Added: {Added}, Deleted: {Deleted}",
+                                collection, reconcileResult.Added, reconcileResult.Deleted);
+                        }
                     }
                     
                     result.Added = aggregatedSyncResult.Added;
@@ -1035,6 +1046,17 @@ namespace Embranch.Services
                         );
                     }
                     _logger.LogInformation("ProcessMergeAsync: Updated sync state for {Count} collections", doltCollections.Count);
+
+                    // PP13-95: Clean up deletion tracking after successful merge
+                    try
+                    {
+                        await _deletionTracker.CleanupStaleTrackingAsync(repoPath);
+                        _logger.LogDebug("ProcessMergeAsync: PP13-95 Cleaned up stale deletion tracking after merge");
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex, "ProcessMergeAsync: PP13-95 Failed to clean up deletion tracking - non-blocking");
+                    }
                 }
 
                 result.Status = SyncStatusV2.Completed;
@@ -1998,6 +2020,226 @@ namespace Embranch.Services
             }
 
             return result;
+        }
+
+        /// <summary>
+        /// PP13-95: Reconciles ChromaDB state with Dolt state after merge operations.
+        /// This goes beyond delta-based sync to ensure full state consistency.
+        /// </summary>
+        /// <param name="collectionName">Name of the collection to reconcile</param>
+        /// <returns>Reconciliation result with counts of documents added/deleted</returns>
+        private async Task<SyncResultV2> ReconcileDoltToChromaAsync(string collectionName)
+        {
+            var result = new SyncResultV2 { Direction = SyncDirection.DoltToChroma };
+
+            try
+            {
+                _logger.LogInformation("PP13-95: Starting post-merge reconciliation for collection '{Collection}'", collectionName);
+
+                // Get all document IDs from Dolt
+                var doltDocIds = await GetAllDoltDocumentIdsAsync(collectionName);
+
+                // Get all document IDs from ChromaDB (grouped by doc ID, not chunk)
+                var chromaDocIds = await GetAllChromaDocumentIdsAsync(collectionName);
+
+                _logger.LogDebug("PP13-95: Reconciliation - Dolt has {DoltCount} docs, ChromaDB has {ChromaCount} docs",
+                    doltDocIds.Count, chromaDocIds.Count);
+
+                // Find documents missing from ChromaDB that exist in Dolt
+                var missingInChroma = doltDocIds.Except(chromaDocIds).ToList();
+                if (missingInChroma.Any())
+                {
+                    _logger.LogInformation("PP13-95: Found {Count} documents in Dolt missing from ChromaDB - syncing",
+                        missingInChroma.Count);
+
+                    foreach (var docId in missingInChroma)
+                    {
+                        try
+                        {
+                            await SyncDocumentFromDoltToChromaAsync(collectionName, docId);
+                            result.Added++;
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.LogWarning(ex, "PP13-95: Failed to sync missing document {DocId} to ChromaDB", docId);
+                        }
+                    }
+                }
+
+                // Find documents in ChromaDB that shouldn't exist (not in Dolt)
+                var extraInChroma = chromaDocIds.Except(doltDocIds).ToList();
+                if (extraInChroma.Any())
+                {
+                    _logger.LogInformation("PP13-95: Found {Count} documents in ChromaDB not in Dolt - removing",
+                        extraInChroma.Count);
+
+                    foreach (var docId in extraInChroma)
+                    {
+                        try
+                        {
+                            // Delete all chunks for this document
+                            var chunkIds = DocumentConverterUtilityV2.GetChunkIds(docId, 100); // Generous chunk count
+                            await _chromaService.DeleteDocumentsAsync(collectionName, chunkIds);
+                            result.Deleted++;
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.LogWarning(ex, "PP13-95: Failed to delete extra document {DocId} from ChromaDB", docId);
+                        }
+                    }
+                }
+
+                if (result.TotalChanges > 0)
+                {
+                    _logger.LogInformation("PP13-95: Reconciliation completed for '{Collection}' - Added: {Added}, Deleted: {Deleted}",
+                        collectionName, result.Added, result.Deleted);
+                    result.Status = SyncStatusV2.Completed;
+                }
+                else
+                {
+                    _logger.LogDebug("PP13-95: Reconciliation found no discrepancies for '{Collection}'", collectionName);
+                    result.Status = SyncStatusV2.NoChanges;
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "PP13-95: Reconciliation failed for collection '{Collection}'", collectionName);
+                result.Status = SyncStatusV2.Failed;
+                result.ErrorMessage = ex.Message;
+            }
+
+            return result;
+        }
+
+        /// <summary>
+        /// PP13-95: Gets all document IDs from Dolt for a collection
+        /// </summary>
+        private async Task<HashSet<string>> GetAllDoltDocumentIdsAsync(string collectionName)
+        {
+            try
+            {
+                var sql = $@"
+                    SELECT doc_id
+                    FROM documents
+                    WHERE collection_name = '{collectionName.Replace("'", "''")}'";
+
+                var results = await _dolt.QueryAsync<dynamic>(sql);
+                var ids = new HashSet<string>();
+
+                foreach (var row in results)
+                {
+                    string? docId = null;
+                    if (row is System.Text.Json.JsonElement jsonElement)
+                    {
+                        if (jsonElement.TryGetProperty("doc_id", out var docIdProp))
+                        {
+                            docId = docIdProp.GetString();
+                        }
+                    }
+                    else if (row != null)
+                    {
+                        docId = (string)row.doc_id;
+                    }
+
+                    if (!string.IsNullOrEmpty(docId))
+                    {
+                        ids.Add(docId);
+                    }
+                }
+
+                return ids;
+            }
+            catch (DoltException ex) when (ex.Message.Contains("table not found"))
+            {
+                return new HashSet<string>();
+            }
+        }
+
+        /// <summary>
+        /// PP13-95: Gets all document IDs from ChromaDB (grouped by doc ID, not chunk)
+        /// </summary>
+        private async Task<HashSet<string>> GetAllChromaDocumentIdsAsync(string collectionName)
+        {
+            try
+            {
+                var results = await _chromaService.GetDocumentsAsync(collectionName);
+                var ids = new HashSet<string>();
+
+                if (results == null) return ids;
+
+                var resultsDict = results as Dictionary<string, object> ?? new Dictionary<string, object>();
+                var chromaIds = (resultsDict.GetValueOrDefault("ids") as List<object>) ?? new List<object>();
+
+                foreach (var id in chromaIds)
+                {
+                    var chunkId = id?.ToString() ?? "";
+                    // Extract document ID from chunk ID (format: docId_chunk_N)
+                    var lastChunkIndex = chunkId.LastIndexOf("_chunk_");
+                    var docId = lastChunkIndex > 0 ? chunkId.Substring(0, lastChunkIndex) : chunkId;
+
+                    if (!string.IsNullOrEmpty(docId))
+                    {
+                        ids.Add(docId);
+                    }
+                }
+
+                return ids;
+            }
+            catch
+            {
+                return new HashSet<string>();
+            }
+        }
+
+        /// <summary>
+        /// PP13-95: Syncs a single document from Dolt to ChromaDB
+        /// </summary>
+        private async Task SyncDocumentFromDoltToChromaAsync(string collectionName, string docId)
+        {
+            var sql = $@"
+                SELECT doc_id, content, content_hash, title, doc_type, metadata
+                FROM documents
+                WHERE collection_name = '{collectionName.Replace("'", "''")}'
+                AND doc_id = '{docId.Replace("'", "''")}'";
+
+            var results = await _dolt.QueryAsync<dynamic>(sql);
+            var doc = results?.FirstOrDefault();
+
+            if (doc == null)
+            {
+                _logger.LogWarning("PP13-95: Document {DocId} not found in Dolt", docId);
+                return;
+            }
+
+            string content = "";
+            string contentHash = "";
+            if (doc is System.Text.Json.JsonElement jsonElement)
+            {
+                if (jsonElement.TryGetProperty("content", out var contentProp))
+                    content = contentProp.GetString() ?? "";
+                if (jsonElement.TryGetProperty("content_hash", out var hashProp))
+                    contentHash = hashProp.GetString() ?? "";
+            }
+            else
+            {
+                content = (string?)doc.content ?? "";
+                contentHash = (string?)doc.content_hash ?? "";
+            }
+
+            var metadata = new Dictionary<string, object>
+            {
+                ["doc_id"] = docId,
+                ["content_hash"] = contentHash,
+                ["is_local_change"] = false
+            };
+
+            await _chromaService.AddDocumentsAsync(
+                collectionName,
+                new List<string> { content },
+                new List<string> { docId },
+                new List<Dictionary<string, object>> { metadata },
+                allowDuplicateIds: false,
+                markAsLocalChange: false);
         }
 
         #endregion

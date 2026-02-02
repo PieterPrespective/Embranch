@@ -133,7 +133,9 @@ namespace EmbranchTesting.IntegrationTests
                 Options.Create(new DoltConfiguration { RepositoryPath = user.DoltRepoPath, DoltExecutablePath = "dolt" }),
                 manifestService, syncStateChecker);
             user.DoltResetTool = new DoltResetTool(
-                loggerFactory.CreateLogger<DoltResetTool>(), user.DoltCli, user.SyncManager, manifestService, syncStateChecker);
+                loggerFactory.CreateLogger<DoltResetTool>(), user.DoltCli, user.SyncManager, manifestService, syncStateChecker,
+                user.DeletionTracker, (ISyncStateTracker)user.DeletionTracker,
+                Options.Create(new DoltConfiguration { RepositoryPath = user.DoltRepoPath, DoltExecutablePath = "dolt" }));
             user.DoltShowTool = new DoltShowTool(
                 loggerFactory.CreateLogger<DoltShowTool>(), user.DoltCli);
         }

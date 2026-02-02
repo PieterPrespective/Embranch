@@ -80,8 +80,8 @@ public class DoltCommitsTool
             if (limit < 1) limit = 1;
             if (limit > 100) limit = 100;
 
-            // Get commit log
-            var commits = await _doltCli.GetLogAsync(limit + offset);
+            // PP13-96: Use GetLogWithAuthorAsync to get full author and date info
+            var commits = await _doltCli.GetLogWithAuthorAsync(limit + offset);
             
             // Apply offset
             if (commits != null && offset > 0)

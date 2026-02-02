@@ -25,10 +25,11 @@ public class DoltFindTool
     }
 
     /// <summary>
-    /// Search for commits by partial hash or message content. Useful for finding specific commits when you don't have the full hash
+    /// Search for commits by partial hash, message content, or author. Useful for finding specific commits when you don't have the full hash.
+    /// PP13-96: Added author search support with search_type='author'.
     /// </summary>
     [McpServerTool]
-    [Description("Search for commits by partial hash or message content. Useful for finding specific commits when you don't have the full hash.")]
+    [Description("Search for commits by partial hash, message content, or author. Valid search_type values: 'all', 'hash', 'message', 'author'.")]
     public virtual async Task<object> DoltFind(
         string query,
         string search_type = "all",
@@ -71,16 +72,23 @@ public class DoltFindTool
                 };
             }
 
-            // Validate search type
-            if (!new[] { "all", "hash", "message" }.Contains(search_type))
+            // PP13-96: Add author search type
+            if (!new[] { "all", "hash", "message", "author" }.Contains(search_type))
             {
                 search_type = "all";
             }
 
-            // Get commits from specified branch or all
-            // TODO: Support filtering by branch
-            var commits = await _doltCli.GetLogAsync(1000); // Get more commits for searching
-            
+            // PP13-96: Use GetLogWithAuthorAsync for author searches, GetLogAsync otherwise
+            IEnumerable<Embranch.Models.CommitInfo> commits;
+            if (search_type == "author" || search_type == "all")
+            {
+                commits = await _doltCli.GetLogWithAuthorAsync(1000);
+            }
+            else
+            {
+                commits = await _doltCli.GetLogAsync(1000);
+            }
+
             var results = new List<object>();
             foreach (var commit in commits)
             {
@@ -104,6 +112,16 @@ public class DoltFindTool
                     {
                         matches = true;
                         matchType = "message";
+                    }
+                }
+
+                // PP13-96: Search by author
+                if (!matches && (search_type == "all" || search_type == "author"))
+                {
+                    if (commit.Author?.Contains(query, StringComparison.OrdinalIgnoreCase) ?? false)
+                    {
+                        matches = true;
+                        matchType = "author";
                     }
                 }
 

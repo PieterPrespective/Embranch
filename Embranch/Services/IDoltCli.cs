@@ -185,7 +185,16 @@ namespace Embranch.Services
         /// <param name="limit">Maximum number of commits to return (default: 10)</param>
         /// <returns>Collection of commit information including hash, message, author, and date</returns>
         Task<IEnumerable<CommitInfo>> GetLogAsync(int limit = 10);
-        
+
+        /// <summary>
+        /// PP13-96: Gets commit log with full author and date information.
+        /// Uses 'dolt log' without --oneline to retrieve complete commit metadata.
+        /// Use this method when author or date information is needed.
+        /// </summary>
+        /// <param name="limit">Maximum number of commits to return (default: 10)</param>
+        /// <returns>Collection of commit information including author and date</returns>
+        Task<IEnumerable<CommitInfo>> GetLogWithAuthorAsync(int limit = 10);
+
         // ==================== Remote Operations ====================
         
         /// <summary>
