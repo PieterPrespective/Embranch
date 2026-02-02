@@ -2,6 +2,13 @@
 
 All notable changes to Embranch will be documented in this file.
 
+<a name="1.0.5"></a>
+## [1.0.5](https://www.github.com/PieterPrespective/Embranch/releases/tag/v1.0.5) (2026-02-02)
+
+### Bug Fixes
+
+* **dolt:** resolve CLI parsing and merge reconciliation issues (PP13-95, PP13-96) ([0d40432](https://www.github.com/PieterPrespective/Embranch/commit/0d4043222e16959a5b01b7e02c495d9f6b5fb1b8))
+
 <a name="1.0.4"></a>
 ## [1.0.4](https://www.github.com/PieterPrespective/Embranch/releases/tag/v1.0.4) (2026-02-02)
 
