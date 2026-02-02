@@ -2,6 +2,39 @@
 
 All notable changes to Embranch will be documented in this file.
 
+<a name="1.0.4"></a>
+## [1.0.4](https://www.github.com/PieterPrespective/Embranch/releases/tag/v1.0.4) (2026-02-02)
+
+### Features
+
+* basic MCP Server Setup ([ef783d3](https://www.github.com/PieterPrespective/Embranch/commit/ef783d353aa7a0effc04441d6578068db42b7ee5))
+* implemented chroma and dolt delta detector ([73cd5b8](https://www.github.com/PieterPrespective/Embranch/commit/73cd5b862fad6111c63cf6b2ec47a39eaef3150e))
+* implemented Dolt CLI interfacing ([2fb5f6d](https://www.github.com/PieterPrespective/Embranch/commit/2fb5f6d6f71ce531e766b626b10c831dd971ea73))
+* implemented primary chroma database tools ([5e77672](https://www.github.com/PieterPrespective/Embranch/commit/5e77672ef55f7c35e02063ca077ff0d5e97995b2))
+* Rename DMMS namespace to Embranch ([887fc22](https://www.github.com/PieterPrespective/Embranch/commit/887fc22f8e93375b5e75ed4fce68aa58effe8950))
+
+### Bug Fixes
+
+* **bootstrap:** resolve fresh clone and sync issues (PP13-87-C2) ([7a152d1](https://www.github.com/PieterPrespective/Embranch/commit/7a152d1e318b7662e617b7c43ff49d6863ff8a7b))
+* **chroma:** resolve ListCollections collection name parsing bug (PP13-89) ([995e9b6](https://www.github.com/PieterPrespective/Embranch/commit/995e9b6e3455c8cd3c89588e5d88da582e8548c8))
+* **docs:** correct environment variable names in README ([782eed0](https://www.github.com/PieterPrespective/Embranch/commit/782eed0b91afb58db6f503cc1faa0bd309ff8ea9))
+* **merge:** handle LocalChangesExist status and update sync state (PP13-90) ([fb48541](https://www.github.com/PieterPrespective/Embranch/commit/fb485411f570ef290af283d303be7c9ee12135e8))
+
+### Maintenance
+
+* add GitHub Actions workflow for build and release ([fbb3fa4](https://www.github.com/PieterPrespective/Embranch/commit/fbb3fa4ffc7791d8e41a870540fc95f08500ff24))
+* configure versionize for automated versioning ([8507462](https://www.github.com/PieterPrespective/Embranch/commit/850746275a3aa48da4e21b69f33ed42f9875e356))
+* **release:** 1.0.0 ([3b38d88](https://www.github.com/PieterPrespective/Embranch/commit/3b38d8806cee449de4a71997aac2da7bb1c4ce0d))
+* **release:** 1.0.1 ([9eefc1d](https://www.github.com/PieterPrespective/Embranch/commit/9eefc1d1880b5163cbbe676a97aeacfec8d98b3c))
+* **release:** 1.0.2 ([8748a4c](https://www.github.com/PieterPrespective/Embranch/commit/8748a4c9ca6a07263beb6466ba2a25f407e1a868))
+* **release:** 1.0.3 ([f988f18](https://www.github.com/PieterPrespective/Embranch/commit/f988f185734c7d680f332f75c40c57b101af3fdf))
+
+### Documentation
+
+* rebrand README from VMRAG to Embranch ([6416f17](https://www.github.com/PieterPrespective/Embranch/commit/6416f171975f97b13a1f6cdc1ecf4c05195ec4e0))
+* setup user docs & tdd ([94ea299](https://www.github.com/PieterPrespective/Embranch/commit/94ea2994924f8115675e839ef16537b8a8d4b7e2))
+* **changelog:** update historical entries and fix URLs ([fee49e5](https://www.github.com/PieterPrespective/Embranch/commit/fee49e56f612a43affc3591f3e93f3ee2e6969b3))
+
 <a name="1.0.3"></a>
 ## [1.0.3](https://www.github.com/PieterPrespective/Embranch/releases/tag/v1.0.3) (2026-01-31)
 
